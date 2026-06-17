@@ -11,7 +11,9 @@
 #include <mutex>
 #include <memory>
 #include <fstream>
+#include <algorithm>
 #include "SyncEngine.h"
+#include "SyncProfile.h"
 
 // Embed modern visual styles manifest when compiling with MSVC
 #ifdef _MSC_VER
@@ -36,7 +38,12 @@ enum ControlIds {
     ID_STATUS_LABEL,
     ID_LOG_EDIT,
     ID_UNDO_BUTTON,
-    ID_EXPORT_CSV_BUTTON
+    ID_EXPORT_CSV_BUTTON,
+    ID_EXCLUDE_FILTER_EDIT,
+    ID_INCLUDE_FILTER_EDIT,
+    ID_SAVE_PROFILE_BUTTON,
+    ID_LOAD_PROFILE_BUTTON,
+    ID_PREVIEW_FILTER_EDIT = 203
 };
 
 // Define thread communications message IDs
@@ -58,6 +65,10 @@ HWND g_hWndSyncBtn = NULL;
 HWND g_hWndProgressBar = NULL;
 HWND g_hWndStatusLabel = NULL;
 HWND g_hWndLogEdit = NULL;
+HWND g_hWndExcludeEdit = NULL;
+HWND g_hWndIncludeEdit = NULL;
+HWND g_hWndSaveProfileBtn = NULL;
+HWND g_hWndLoadProfileBtn = NULL;
 
 // Brushes for custom dark styling (VS Dark theme)
 HBRUSH g_hbrBackground = NULL;
@@ -126,7 +137,9 @@ SyncMessageRegistry g_MsgRegistry;
 // Context structure for resizable and sortable Preview Window
 struct PreviewWindowContext {
     std::vector<ChronoSync::PreviewItem>* pList = nullptr;
+    std::vector<int> displayedIndices;
     HWND hwndLV = NULL;
+    HWND hwndFilter = NULL;
     HWND lblSummary = NULL;
     HWND btnExport = NULL;
     HWND btnClose = NULL;
@@ -137,6 +150,85 @@ struct PreviewWindowContext {
 // Forward declarations
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK PreviewWndProc(HWND, UINT, WPARAM, LPARAM);
+
+ChronoSync::FilterOptions GetFiltersFromUI() {
+    wchar_t includeBuf[1024] = {};
+    wchar_t excludeBuf[1024] = {};
+    GetWindowTextW(g_hWndIncludeEdit, includeBuf, 1024);
+    GetWindowTextW(g_hWndExcludeEdit, excludeBuf, 1024);
+    return ChronoSync::FilterOptions::FromSemicolonList(includeBuf, excludeBuf);
+}
+
+void ApplyProfileToUI(const ChronoSync::SyncProfile& profile) {
+    SetWindowTextW(g_hWndSrcEdit, profile.source.c_str());
+    SetWindowTextW(g_hWndDestEdit, profile.destination.c_str());
+    SendMessageW(g_hWndPruneCheck, BM_SETCHECK, profile.prune ? BST_CHECKED : BST_UNCHECKED, 0);
+    SetWindowTextW(g_hWndIncludeEdit, profile.filters.IncludeToSemicolonList().c_str());
+    SetWindowTextW(g_hWndExcludeEdit, profile.filters.ExcludeToSemicolonList().c_str());
+
+    std::wstring trashPath = profile.destination + L"\\.chrono_trash";
+    EnableWindow(g_hWndUndoBtn, std::filesystem::exists(trashPath) ? TRUE : FALSE);
+}
+
+ChronoSync::SyncProfile BuildProfileFromUI() {
+    wchar_t src[MAX_PATH] = {};
+    wchar_t dest[MAX_PATH] = {};
+    GetWindowTextW(g_hWndSrcEdit, src, MAX_PATH);
+    GetWindowTextW(g_hWndDestEdit, dest, MAX_PATH);
+
+    ChronoSync::SyncProfile profile;
+    profile.name = L"ChronoSync Profile";
+    profile.source = src;
+    profile.destination = dest;
+    profile.prune = (SendMessageW(g_hWndPruneCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    profile.filters = GetFiltersFromUI();
+    return profile;
+}
+
+static bool ContainsInsensitive(const std::wstring& haystack, const std::wstring& needle) {
+    if (needle.empty()) {
+        return true;
+    }
+    std::wstring lowerHay = haystack;
+    std::wstring lowerNeedle = needle;
+    std::transform(lowerHay.begin(), lowerHay.end(), lowerHay.begin(), towlower);
+    std::transform(lowerNeedle.begin(), lowerNeedle.end(), lowerNeedle.begin(), towlower);
+    return lowerHay.find(lowerNeedle) != std::wstring::npos;
+}
+
+void RebuildPreviewFilter(PreviewWindowContext* ctx) {
+    if (!ctx || !ctx->pList) {
+        return;
+    }
+
+    wchar_t filterBuf[256] = {};
+    if (ctx->hwndFilter) {
+        GetWindowTextW(ctx->hwndFilter, filterBuf, 256);
+    }
+
+    ctx->displayedIndices.clear();
+    for (int i = 0; i < static_cast<int>(ctx->pList->size()); ++i) {
+        const auto& item = (*ctx->pList)[static_cast<size_t>(i)];
+        if (ContainsInsensitive(item.relativePath, filterBuf) ||
+            ContainsInsensitive(item.action, filterBuf) ||
+            ContainsInsensitive(item.sizeStr, filterBuf)) {
+            ctx->displayedIndices.push_back(i);
+        }
+    }
+
+    if (ctx->hwndLV) {
+        SendMessageW(ctx->hwndLV, WM_SETREDRAW, FALSE, 0);
+        SendMessageW(ctx->hwndLV, LVM_SETITEMCOUNT, (WPARAM)ctx->displayedIndices.size(), (LPARAM)LVSICF_NOINVALIDATEALL);
+        SendMessageW(ctx->hwndLV, WM_SETREDRAW, TRUE, 0);
+        InvalidateRect(ctx->hwndLV, NULL, TRUE);
+    }
+
+    if (ctx->lblSummary) {
+        std::wstring summary = L"Showing " + std::to_wstring(ctx->displayedIndices.size()) +
+                               L" of " + std::to_wstring(ctx->pList->size()) + L" planned changes.";
+        SetWindowTextW(ctx->lblSummary, summary.c_str());
+    }
+}
 
 // Helper to format bytes to string
 std::wstring FormatBytes(unsigned long long bytes) {
@@ -220,6 +312,71 @@ std::wstring SaveCSVDialog(HWND hWndParent, const wchar_t* title) {
     return resultPath;
 }
 
+std::wstring OpenProfileDialog(HWND hWndParent) {
+    std::wstring resultPath;
+    IFileOpenDialog* pFileOpen = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_ALL,
+                                  IID_IFileOpenDialog, reinterpret_cast<void**>(&pFileOpen));
+    if (SUCCEEDED(hr)) {
+        COMDLG_FILTERSPEC fileTypes[] = {
+            { L"ChronoSync Profiles (*.chronosync)", L"*.chronosync" },
+            { L"JSON Files (*.json)", L"*.json" },
+            { L"All Files (*.*)", L"*.*" }
+        };
+        pFileOpen->SetFileTypes(3, fileTypes);
+        pFileOpen->SetDefaultExtension(L"chronosync");
+        pFileOpen->SetTitle(L"Load Sync Profile");
+        hr = pFileOpen->Show(hWndParent);
+        if (SUCCEEDED(hr)) {
+            IShellItem* pItem = nullptr;
+            hr = pFileOpen->GetResult(&pItem);
+            if (SUCCEEDED(hr)) {
+                wchar_t* pszFilePath = nullptr;
+                hr = pItem->GetDisplayName(SIGDN_FILESYSPATH, &pszFilePath);
+                if (SUCCEEDED(hr)) {
+                    resultPath = pszFilePath;
+                    CoTaskMemFree(pszFilePath);
+                }
+                pItem->Release();
+            }
+        }
+        pFileOpen->Release();
+    }
+    return resultPath;
+}
+
+std::wstring SaveProfileDialog(HWND hWndParent) {
+    std::wstring resultPath;
+    IFileSaveDialog* pFileSave = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_ALL,
+                                  IID_IFileSaveDialog, reinterpret_cast<void**>(&pFileSave));
+    if (SUCCEEDED(hr)) {
+        COMDLG_FILTERSPEC fileTypes[] = {
+            { L"ChronoSync Profiles (*.chronosync)", L"*.chronosync" },
+            { L"JSON Files (*.json)", L"*.json" }
+        };
+        pFileSave->SetFileTypes(2, fileTypes);
+        pFileSave->SetDefaultExtension(L"chronosync");
+        pFileSave->SetTitle(L"Save Sync Profile");
+        hr = pFileSave->Show(hWndParent);
+        if (SUCCEEDED(hr)) {
+            IShellItem* pItem = nullptr;
+            hr = pFileSave->GetResult(&pItem);
+            if (SUCCEEDED(hr)) {
+                wchar_t* pszFilePath = nullptr;
+                hr = pItem->GetDisplayName(SIGDN_FILESYSPATH, &pszFilePath);
+                if (SUCCEEDED(hr)) {
+                    resultPath = pszFilePath;
+                    CoTaskMemFree(pszFilePath);
+                }
+                pItem->Release();
+            }
+        }
+        pFileSave->Release();
+    }
+    return resultPath;
+}
+
 // Modern COM file browser dialog helper
 std::wstring BrowseForFolder(HWND hWndParent, const wchar_t* title) {
     std::wstring resultPath = L"";
@@ -260,6 +417,10 @@ void SetControlsState(BOOL enabled) {
     EnableWindow(g_hWndDestBrowse, enabled);
     EnableWindow(g_hWndPruneCheck, enabled);
     EnableWindow(GetDlgItem(g_hWndMain, ID_PRUNE_LABEL), enabled);
+    EnableWindow(g_hWndExcludeEdit, enabled);
+    EnableWindow(g_hWndIncludeEdit, enabled);
+    EnableWindow(g_hWndSaveProfileBtn, enabled);
+    EnableWindow(g_hWndLoadProfileBtn, enabled);
     EnableWindow(g_hWndPreviewBtn, enabled);
     EnableWindow(g_hWndSyncBtn, enabled);
     if (!enabled) {
@@ -268,7 +429,7 @@ void SetControlsState(BOOL enabled) {
 }
 
 // Background thread preview runner
-void PreviewThreadProc(std::wstring src, std::wstring dest, bool prune) {
+void PreviewThreadProc(std::wstring src, std::wstring dest, bool prune, ChronoSync::FilterOptions filters) {
     ChronoSync::SyncCallbacks callbacks;
     
     callbacks.onScanStart = [](const std::wstring& rootDir) {
@@ -294,14 +455,14 @@ void PreviewThreadProc(std::wstring src, std::wstring dest, bool prune) {
         PostMessageW(g_hWndMain, WM_SYNC_EVENT, 0, 0);
     };
 
-    auto list = ChronoSync::SyncEngine::Preview(src, dest, prune, callbacks);
+    auto list = ChronoSync::SyncEngine::Preview(src, dest, prune, filters, callbacks);
     
     std::vector<ChronoSync::PreviewItem>* pList = new std::vector<ChronoSync::PreviewItem>(std::move(list));
     PostMessageW(g_hWndMain, WM_SYNC_PREVIEW_COMPLETE, 0, (LPARAM)pList);
 }
 
 // Background thread sync runner
-void SyncThreadProc(std::wstring src, std::wstring dest, bool prune) {
+void SyncThreadProc(std::wstring src, std::wstring dest, bool prune, ChronoSync::FilterOptions filters) {
     ChronoSync::SyncCallbacks callbacks;
     
     callbacks.onScanStart = [](const std::wstring& rootDir) {
@@ -372,7 +533,7 @@ void SyncThreadProc(std::wstring src, std::wstring dest, bool prune) {
 
     // Run synchronization
     ChronoSync::SyncStats* pStats = new ChronoSync::SyncStats();
-    *pStats = ChronoSync::SyncEngine::Sync(src, dest, prune, callbacks);
+    *pStats = ChronoSync::SyncEngine::Sync(src, dest, prune, filters, callbacks);
 
     PostMessageW(g_hWndMain, WM_SYNC_COMPLETE, 1, (LPARAM)pStats);
 }
@@ -421,24 +582,42 @@ void CreateControls(HWND hWnd, HINSTANCE hInstance) {
     g_hWndUndoBtn = CreateWindowExW(0, L"BUTTON", L"Undo Pruning", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
                                     500, 131, 100, 26, hWnd, (HMENU)ID_UNDO_BUTTON, hInstance, NULL);
 
+    HWND lblExclude = CreateWindowExW(0, L"STATIC", L"Exclude filters (semicolon-separated):",
+                                      WS_CHILD | WS_VISIBLE, 20, 165, 300, 20, hWnd, NULL, hInstance, NULL);
+    g_hWndExcludeEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT",
+                                        L"*.pkl; node_modules; *.zip",
+                                        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                                        20, 185, 580, 24, hWnd, (HMENU)ID_EXCLUDE_FILTER_EDIT, hInstance, NULL);
+
+    HWND lblInclude = CreateWindowExW(0, L"STATIC", L"Include filters (optional, empty = all):",
+                                      WS_CHILD | WS_VISIBLE, 20, 215, 300, 20, hWnd, NULL, hInstance, NULL);
+    g_hWndIncludeEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                                        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                                        20, 235, 580, 24, hWnd, (HMENU)ID_INCLUDE_FILTER_EDIT, hInstance, NULL);
+
+    g_hWndSaveProfileBtn = CreateWindowExW(0, L"BUTTON", L"Save Profile...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                           20, 268, 140, 28, hWnd, (HMENU)ID_SAVE_PROFILE_BUTTON, hInstance, NULL);
+    g_hWndLoadProfileBtn = CreateWindowExW(0, L"BUTTON", L"Load Profile...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                           170, 268, 140, 28, hWnd, (HMENU)ID_LOAD_PROFILE_BUTTON, hInstance, NULL);
+
     // Split buttons layout
     g_hWndPreviewBtn = CreateWindowExW(0, L"BUTTON", L"Preview Changes", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 
-                                       20, 168, 280, 36, hWnd, (HMENU)ID_PREVIEW_BUTTON, hInstance, NULL);
+                                       20, 308, 280, 36, hWnd, (HMENU)ID_PREVIEW_BUTTON, hInstance, NULL);
     g_hWndSyncBtn = CreateWindowExW(0, L"BUTTON", L"Sync Now", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 
-                                    320, 168, 280, 36, hWnd, (HMENU)ID_SYNC_BUTTON, hInstance, NULL);
+                                    320, 308, 280, 36, hWnd, (HMENU)ID_SYNC_BUTTON, hInstance, NULL);
 
     g_hWndStatusLabel = CreateWindowExW(0, L"STATIC", L"Ready", WS_CHILD | WS_VISIBLE, 
-                                        20, 218, 580, 20, hWnd, (HMENU)ID_STATUS_LABEL, hInstance, NULL);
+                                        20, 358, 580, 20, hWnd, (HMENU)ID_STATUS_LABEL, hInstance, NULL);
 
     g_hWndProgressBar = CreateWindowExW(0, PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE, 
-                                        20, 238, 580, 20, hWnd, (HMENU)ID_PROGRESS_BAR, hInstance, NULL);
+                                        20, 378, 580, 20, hWnd, (HMENU)ID_PROGRESS_BAR, hInstance, NULL);
 
     HWND lblLog = CreateWindowExW(0, L"STATIC", L"Operation Log:", WS_CHILD | WS_VISIBLE, 
-                                  20, 275, 120, 20, hWnd, NULL, hInstance, NULL);
+                                  20, 408, 120, 20, hWnd, NULL, hInstance, NULL);
 
     g_hWndLogEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", 
                                     WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL, 
-                                    20, 298, 580, 190, hWnd, (HMENU)ID_LOG_EDIT, hInstance, NULL);
+                                    20, 431, 580, 150, hWnd, (HMENU)ID_LOG_EDIT, hInstance, NULL);
 
     // Apply fonts
     SendMessageW(lblSrc, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
@@ -450,6 +629,12 @@ void CreateControls(HWND hWnd, HINSTANCE hInstance) {
     SendMessageW(g_hWndPruneCheck, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
     SendMessageW(lblPrune, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
     SendMessageW(g_hWndUndoBtn, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+    SendMessageW(lblExclude, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+    SendMessageW(g_hWndExcludeEdit, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+    SendMessageW(lblInclude, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+    SendMessageW(g_hWndIncludeEdit, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+    SendMessageW(g_hWndSaveProfileBtn, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+    SendMessageW(g_hWndLoadProfileBtn, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
     SendMessageW(g_hWndPreviewBtn, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
     SendMessageW(g_hWndSyncBtn, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
     SendMessageW(g_hWndStatusLabel, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
@@ -542,14 +727,42 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 }
 
                 bool prune = (SendMessageW(g_hWndPruneCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                ChronoSync::FilterOptions filters = GetFiltersFromUI();
 
                 SetControlsState(FALSE);
                 SetWindowTextW(g_hWndLogEdit, L"");
 
                 // Spawn background preview thread
                 g_SyncRunning = true;
-                std::thread t(PreviewThreadProc, sourcePath, destPath, prune);
+                std::thread t(PreviewThreadProc, sourcePath, destPath, prune, filters);
                 t.detach();
+            } else if (wmId == ID_SAVE_PROFILE_BUTTON) {
+                ChronoSync::SyncProfile profile = BuildProfileFromUI();
+                if (profile.source.empty() || profile.destination.empty()) {
+                    MessageBoxW(hWnd, L"Please select both source and destination folders before saving a profile.", L"ChronoSync Profile", MB_OK | MB_ICONWARNING);
+                    break;
+                }
+                std::wstring path = SaveProfileDialog(hWnd);
+                if (!path.empty()) {
+                    std::wstring error;
+                    if (ChronoSync::SyncProfileIO::SaveToFile(profile, path, error)) {
+                        MessageBoxW(hWnd, L"Profile saved successfully.", L"ChronoSync Profile", MB_OK | MB_ICONINFORMATION);
+                    } else {
+                        MessageBoxW(hWnd, (L"Failed to save profile: " + error).c_str(), L"ChronoSync Profile", MB_OK | MB_ICONERROR);
+                    }
+                }
+            } else if (wmId == ID_LOAD_PROFILE_BUTTON) {
+                std::wstring path = OpenProfileDialog(hWnd);
+                if (!path.empty()) {
+                    ChronoSync::SyncProfile profile;
+                    std::wstring error;
+                    if (ChronoSync::SyncProfileIO::LoadFromFile(path, profile, error)) {
+                        ApplyProfileToUI(profile);
+                        MessageBoxW(hWnd, (L"Loaded profile: " + profile.name).c_str(), L"ChronoSync Profile", MB_OK | MB_ICONINFORMATION);
+                    } else {
+                        MessageBoxW(hWnd, (L"Failed to load profile: " + error).c_str(), L"ChronoSync Profile", MB_OK | MB_ICONERROR);
+                    }
+                }
             } else if (wmId == ID_SYNC_BUTTON) {
                 wchar_t src[MAX_PATH];
                 wchar_t dest[MAX_PATH];
@@ -569,13 +782,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 }
 
                 bool prune = (SendMessageW(g_hWndPruneCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                ChronoSync::FilterOptions filters = GetFiltersFromUI();
 
                 SetControlsState(FALSE);
                 SetWindowTextW(g_hWndLogEdit, L"");
 
                 // Start sync on background thread
                 g_SyncRunning = true;
-                std::thread t(SyncThreadProc, sourcePath, destPath, prune);
+                std::thread t(SyncThreadProc, sourcePath, destPath, prune, filters);
                 t.detach();
             }
             break;
@@ -753,11 +967,16 @@ LRESULT CALLBACK PreviewWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
             ctx->pList = pList;
             SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)ctx);
 
+            ctx->hwndFilter = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                15, 15, 650, 24, hWnd, (HMENU)ID_PREVIEW_FILTER_EDIT, GetModuleHandleW(NULL), NULL);
+            SendMessageW(ctx->hwndFilter, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+
             // Create list view child control using LVS_OWNERDATA for instant loading
             ctx->hwndLV = CreateWindowExW(
                 0, WC_LISTVIEWW, L"",
                 WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_OWNERDATA | WS_BORDER | WS_VSCROLL,
-                15, 15, 650, 360,
+                15, 48, 650, 327,
                 hWnd, (HMENU)201, GetModuleHandleW(NULL), NULL
             );
 
@@ -797,14 +1016,7 @@ LRESULT CALLBACK PreviewWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
             SendMessageW(ctx->lblSummary, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
             if (pList) {
-                std::wstring summaryText = L"Total planned changes: " + std::to_wstring(pList->size()) + L" items.";
-                SetWindowTextW(ctx->lblSummary, summaryText.c_str());
-
-                // Set item count wrapped in WM_SETREDRAW safety blocks to avoid flicker
-                SendMessageW(ctx->hwndLV, WM_SETREDRAW, FALSE, 0);
-                SendMessageW(ctx->hwndLV, LVM_SETITEMCOUNT, (WPARAM)pList->size(), (LPARAM)LVSICF_NOINVALIDATEALL);
-                SendMessageW(ctx->hwndLV, WM_SETREDRAW, TRUE, 0);
-                InvalidateRect(ctx->hwndLV, NULL, TRUE);
+                RebuildPreviewFilter(ctx);
             }
 
             // Export CSV button (placed symmetrically to the left of the Close button with 10px gap)
@@ -825,9 +1037,13 @@ LRESULT CALLBACK PreviewWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
                 int cx = LOWORD(lParam);
                 int cy = HIWORD(lParam);
 
+                // Resize filter box
+                if (ctx->hwndFilter) {
+                    MoveWindow(ctx->hwndFilter, 15, 15, cx - 30, 24, TRUE);
+                }
                 // Resize ListView
                 if (ctx->hwndLV) {
-                    MoveWindow(ctx->hwndLV, 15, 15, cx - 30, cy - 70, TRUE);
+                    MoveWindow(ctx->hwndLV, 15, 48, cx - 30, cy - 103, TRUE);
                 }
                 // Reposition Summary label
                 if (ctx->lblSummary) {
@@ -852,11 +1068,17 @@ LRESULT CALLBACK PreviewWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         }
         case WM_COMMAND: {
             int wmId = LOWORD(wParam);
+            PreviewWindowContext* ctx =
+                (PreviewWindowContext*)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
+
+            if (wmId == ID_PREVIEW_FILTER_EDIT && HIWORD(wParam) == EN_CHANGE) {
+                RebuildPreviewFilter(ctx);
+                break;
+            }
+
             if (wmId == IDCANCEL) {
                 DestroyWindow(hWnd);
             } else if (wmId == ID_EXPORT_CSV_BUTTON) {
-                PreviewWindowContext* ctx = 
-                    (PreviewWindowContext*)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
                 if (ctx && ctx->pList && !ctx->pList->empty()) {
                     std::wstring selectedPath = SaveCSVDialog(hWnd, L"Export Preview to CSV");
                     if (!selectedPath.empty()) {
@@ -867,15 +1089,31 @@ LRESULT CALLBACK PreviewWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
                             
                             // Write CSV header (Relative Path, Planned Action, Size (Bytes), Formatted Size)
                             out << "Relative Path,Planned Action,Size (Bytes),Formatted Size\n";
-                            
-                            for (const auto& item : *ctx->pList) {
-                                std::wstring escapedPath = EscapeCSV(item.relativePath);
-                                std::wstring escapedAction = EscapeCSV(item.action);
-                                std::wstring rawSizeStr = std::to_wstring(item.fileSize);
-                                std::wstring escapedSize = EscapeCSV(item.sizeStr);
-                                
-                                std::string utf8Line = WideToUTF8(escapedPath + L"," + escapedAction + L"," + rawSizeStr + L"," + escapedSize + L"\n");
-                                out.write(utf8Line.data(), utf8Line.size());
+
+                            const auto& indices = (!ctx->displayedIndices.empty())
+                                ? ctx->displayedIndices
+                                : std::vector<int>();
+                            if (!indices.empty()) {
+                                for (int index : indices) {
+                                    const auto& item = (*ctx->pList)[static_cast<size_t>(index)];
+                                    std::wstring escapedPath = EscapeCSV(item.relativePath);
+                                    std::wstring escapedAction = EscapeCSV(item.action);
+                                    std::wstring rawSizeStr = std::to_wstring(item.fileSize);
+                                    std::wstring escapedSize = EscapeCSV(item.sizeStr);
+
+                                    std::string utf8Line = WideToUTF8(escapedPath + L"," + escapedAction + L"," + rawSizeStr + L"," + escapedSize + L"\n");
+                                    out.write(utf8Line.data(), utf8Line.size());
+                                }
+                            } else {
+                                for (const auto& item : *ctx->pList) {
+                                    std::wstring escapedPath = EscapeCSV(item.relativePath);
+                                    std::wstring escapedAction = EscapeCSV(item.action);
+                                    std::wstring rawSizeStr = std::to_wstring(item.fileSize);
+                                    std::wstring escapedSize = EscapeCSV(item.sizeStr);
+
+                                    std::string utf8Line = WideToUTF8(escapedPath + L"," + escapedAction + L"," + rawSizeStr + L"," + escapedSize + L"\n");
+                                    out.write(utf8Line.data(), utf8Line.size());
+                                }
                             }
                             out.close();
                             MessageBoxW(hWnd, L"Preview items exported successfully!", L"Export Complete", MB_OK | MB_ICONINFORMATION);
@@ -896,8 +1134,8 @@ LRESULT CALLBACK PreviewWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
 
             if (pnmh->code == LVN_GETDISPINFOW) {
                 NMLVDISPINFOW* plvdi = (NMLVDISPINFOW*)lParam;
-                if (ctx && ctx->pList && plvdi->item.iItem < (int)ctx->pList->size()) {
-                    const auto& item = (*ctx->pList)[plvdi->item.iItem];
+                if (ctx && ctx->pList && plvdi->item.iItem < (int)ctx->displayedIndices.size()) {
+                    const auto& item = (*ctx->pList)[static_cast<size_t>(ctx->displayedIndices[static_cast<size_t>(plvdi->item.iItem)])];
                     if (plvdi->item.mask & LVIF_TEXT) {
                         if (plvdi->item.iSubItem == 0) {
                             plvdi->item.pszText = const_cast<wchar_t*>(item.relativePath.c_str());
@@ -910,7 +1148,7 @@ LRESULT CALLBACK PreviewWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
                 }
             } else if (pnmh->code == LVN_COLUMNCLICK) {
                 LPNMLISTVIEW pnmlv = (LPNMLISTVIEW)lParam;
-                if (ctx && ctx->pList && !ctx->pList->empty()) {
+                if (ctx && ctx->pList && !ctx->displayedIndices.empty()) {
                     int col = pnmlv->iSubItem;
                     if (ctx->sortColumn == col) {
                         ctx->sortAscending = !ctx->sortAscending;
@@ -920,28 +1158,25 @@ LRESULT CALLBACK PreviewWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
                     }
 
                     bool asc = ctx->sortAscending;
-                    if (col == 0) {
-                        // Sort by Relative Path (alphabetical)
-                        std::sort(ctx->pList->begin(), ctx->pList->end(), [asc](const ChronoSync::PreviewItem& a, const ChronoSync::PreviewItem& b) {
+                    auto compareByIndex = [&](int aIdx, int bIdx) {
+                        const auto& a = (*ctx->pList)[static_cast<size_t>(aIdx)];
+                        const auto& b = (*ctx->pList)[static_cast<size_t>(bIdx)];
+                        if (col == 0) {
                             return asc ? (a.relativePath < b.relativePath) : (a.relativePath > b.relativePath);
-                        });
-                    } else if (col == 1) {
-                        // Sort by Planned Action (alphabetical)
-                        std::sort(ctx->pList->begin(), ctx->pList->end(), [asc](const ChronoSync::PreviewItem& a, const ChronoSync::PreviewItem& b) {
+                        }
+                        if (col == 1) {
                             if (a.action != b.action) {
                                 return asc ? (a.action < b.action) : (a.action > b.action);
                             }
                             return asc ? (a.relativePath < b.relativePath) : (a.relativePath > b.relativePath);
-                        });
-                    } else if (col == 2) {
-                        // Sort by Size (numeric fileSize)
-                        std::sort(ctx->pList->begin(), ctx->pList->end(), [asc](const ChronoSync::PreviewItem& a, const ChronoSync::PreviewItem& b) {
-                            if (a.fileSize != b.fileSize) {
-                                return asc ? (a.fileSize < b.fileSize) : (a.fileSize > b.fileSize);
-                            }
-                            return asc ? (a.relativePath < b.relativePath) : (a.relativePath > b.relativePath);
-                        });
-                    }
+                        }
+                        if (a.fileSize != b.fileSize) {
+                            return asc ? (a.fileSize < b.fileSize) : (a.fileSize > b.fileSize);
+                        }
+                        return asc ? (a.relativePath < b.relativePath) : (a.relativePath > b.relativePath);
+                    };
+
+                    std::sort(ctx->displayedIndices.begin(), ctx->displayedIndices.end(), compareByIndex);
 
                     // Force ListView to refresh and redraw sorted items
                     InvalidateRect(ctx->hwndLV, NULL, TRUE);
@@ -1013,8 +1248,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return 0;
     }
 
-    // Adjust size so client area is 620x500
-    RECT rect = {0, 0, 620, 500};
+    // Adjust size so client area is 620x600
+    RECT rect = {0, 0, 620, 600};
     AdjustWindowRectEx(&rect, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE, 0);
 
     // Create Main GUI Window

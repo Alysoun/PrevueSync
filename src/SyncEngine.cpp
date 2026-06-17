@@ -16,7 +16,8 @@
 namespace ChronoSync {
 
     // Helper recursive directory scanner using FindFirstFileW/FindNextFileW
-    static void ScanDirectoryHelper(const std::wstring& rootDir, const std::wstring& subDir, 
+    static void ScanDirectoryHelper(const std::wstring& rootDir, const std::wstring& subDir,
+                                    const FilterOptions& filters,
                                     std::vector<SyncItem>& items, const SyncCallbacks& callbacks) {
         std::wstring searchPath = rootDir + L"\\" + (subDir.empty() ? L"" : subDir + L"\\") + L"*";
         WIN32_FIND_DATAW findData;
@@ -41,9 +42,18 @@ namespace ChronoSync {
             }
 
             std::wstring relPath = subDir.empty() ? name : subDir + L"\\" + name;
+            bool isDirectory = (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+
+            if (isDirectory && PathFilter::ShouldSkipDirectory(filters, name)) {
+                continue;
+            }
+            if (PathFilter::IsExcluded(filters, relPath, name, isDirectory)) {
+                continue;
+            }
+
             SyncItem item;
             item.relativePath = relPath;
-            item.isDirectory = (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            item.isDirectory = isDirectory;
             item.lastWriteTime = findData.ftLastWriteTime;
 
             bool isReparsePoint = (findData.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
@@ -81,7 +91,7 @@ namespace ChronoSync {
                 }
                 // Only recurse if the directory is NOT a symbolic link/junction (reparse point)
                 if (!isReparsePoint) {
-                    ScanDirectoryHelper(rootDir, relPath, items, callbacks);
+                    ScanDirectoryHelper(rootDir, relPath, filters, items, callbacks);
                 }
             }
         } while (FindNextFileW(hFind, &findData));
@@ -89,14 +99,14 @@ namespace ChronoSync {
         FindClose(hFind);
     }
 
-    std::vector<SyncItem> SyncEngine::ScanDirectory(const std::wstring& rootDir, const SyncCallbacks& callbacks) {
+    std::vector<SyncItem> SyncEngine::ScanDirectory(const std::wstring& rootDir, const FilterOptions& filters, const SyncCallbacks& callbacks) {
         std::vector<SyncItem> items;
         if (callbacks.onScanStart) {
             callbacks.onScanStart(rootDir);
         }
         
         if (std::filesystem::exists(rootDir)) {
-            ScanDirectoryHelper(rootDir, L"", items, callbacks);
+            ScanDirectoryHelper(rootDir, L"", filters, items, callbacks);
         }
         
         if (callbacks.onScanComplete) {
@@ -136,7 +146,7 @@ namespace ChronoSync {
         return PROGRESS_CONTINUE;
     }
 
-    SyncStats SyncEngine::Sync(const std::wstring& source, const std::wstring& destination, bool prune, const SyncCallbacks& callbacks) {
+    SyncStats SyncEngine::Sync(const std::wstring& source, const std::wstring& destination, bool prune, const FilterOptions& filters, const SyncCallbacks& callbacks) {
         auto startTime = std::chrono::high_resolution_clock::now();
         SyncStats stats;
 
@@ -153,14 +163,14 @@ namespace ChronoSync {
 
         // 2. Scan source directory
         auto scanStart = std::chrono::high_resolution_clock::now();
-        std::vector<SyncItem> srcItems = ScanDirectory(source, callbacks);
+        std::vector<SyncItem> srcItems = ScanDirectory(source, filters, callbacks);
         auto scanEnd = std::chrono::high_resolution_clock::now();
         stats.scanTimeMs = std::chrono::duration<double, std::milli>(scanEnd - scanStart).count();
 
         // 3. Scan destination directory (if exists)
         std::vector<SyncItem> destItems;
         if (std::filesystem::exists(destRoot)) {
-            destItems = ScanDirectory(destination, callbacks);
+            destItems = ScanDirectory(destination, filters, callbacks);
         }
 
         // 4. Compare directories
@@ -527,7 +537,7 @@ namespace ChronoSync {
         return std::wstring(buf);
     }
 
-    std::vector<PreviewItem> SyncEngine::Preview(const std::wstring& source, const std::wstring& destination, bool prune, const SyncCallbacks& callbacks) {
+    std::vector<PreviewItem> SyncEngine::Preview(const std::wstring& source, const std::wstring& destination, bool prune, const FilterOptions& filters, const SyncCallbacks& callbacks) {
         std::vector<PreviewItem> previewList;
 
         std::filesystem::path srcRoot(source);
@@ -542,12 +552,12 @@ namespace ChronoSync {
         }
 
         // 2. Scan source directory
-        std::vector<SyncItem> srcItems = ScanDirectory(source, callbacks);
+        std::vector<SyncItem> srcItems = ScanDirectory(source, filters, callbacks);
 
         // 3. Scan destination directory (if exists)
         std::vector<SyncItem> destItems;
         if (std::filesystem::exists(destRoot)) {
-            destItems = ScanDirectory(destination, callbacks);
+            destItems = ScanDirectory(destination, filters, callbacks);
         }
 
         // 4. Compare directories
@@ -697,7 +707,7 @@ namespace ChronoSync {
         }
 
         // Scan trash folder recursively to find files/dirs to restore
-        std::vector<SyncItem> trashItems = ScanDirectory(trashRoot.wstring(), callbacks);
+        std::vector<SyncItem> trashItems = ScanDirectory(trashRoot.wstring(), FilterOptions{}, callbacks);
 
         // Sort items by length ascending to restore directories first
         std::sort(trashItems.begin(), trashItems.end(), [](const SyncItem& a, const SyncItem& b) {

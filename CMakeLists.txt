@@ -14,6 +14,10 @@ add_executable(ChronoSync WIN32
     src/Main.cpp
     src/SyncEngine.cpp
     src/SyncEngine.h
+    src/PathFilter.cpp
+    src/PathFilter.h
+    src/SyncProfile.cpp
+    src/SyncProfile.h
 )
 target_include_directories(ChronoSync PRIVATE src)
 
@@ -22,6 +26,8 @@ add_executable(ChronoSyncTests
     tests/TestMain.cpp
     src/SyncEngine.cpp
     src/SyncEngine.h
+    src/PathFilter.cpp
+    src/PathFilter.h
 )
 target_include_directories(ChronoSyncTests PRIVATE src)
 

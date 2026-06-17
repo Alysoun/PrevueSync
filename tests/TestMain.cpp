@@ -67,6 +67,8 @@ int main() {
     std::wcout << L"ChronoSync Automated Verification Test Suite" << std::endl;
     std::wcout << L"==============================================" << std::endl;
 
+    ChronoSync::FilterOptions noFilters;
+
     fs::path sandbox = fs::current_path() / L"test_sandbox";
     fs::path srcDir = sandbox / L"source";
     fs::path destDir = sandbox / L"destination";
@@ -95,7 +97,7 @@ int main() {
 
     std::wcout << L"[2/6] Executing initial full synchronization..." << std::endl;
     auto callbacks = GetTestCallbacks();
-    ChronoSync::SyncStats initialStats = ChronoSync::SyncEngine::Sync(srcDir.wstring(), destDir.wstring(), false, callbacks);
+    ChronoSync::SyncStats initialStats = ChronoSync::SyncEngine::Sync(srcDir.wstring(), destDir.wstring(), false, noFilters, callbacks);
 
     // Assert initial sync copied everything
     std::wcout << L"      Initial sync transferred " << initialStats.filesCopied << L" files." << std::endl;
@@ -132,7 +134,7 @@ int main() {
     WriteTestFile(destDir / L"folder1/abandoned_nested.txt", "Should be pruned nested");
 
     std::wcout << L"[4/6] Executing differential synchronization with pruning..." << std::endl;
-    ChronoSync::SyncStats diffStats = ChronoSync::SyncEngine::Sync(srcDir.wstring(), destDir.wstring(), true, callbacks);
+    ChronoSync::SyncStats diffStats = ChronoSync::SyncEngine::Sync(srcDir.wstring(), destDir.wstring(), true, noFilters, callbacks);
 
     std::wcout << L"      Differential files copied: " << diffStats.filesCopied << std::endl;
     std::wcout << L"      Differential files skipped: " << diffStats.filesSkipped << std::endl;
@@ -176,7 +178,7 @@ int main() {
     assert(junctionCreated && "Failed to create source junction for test");
 
     // Run sync again to sync the junction
-    ChronoSync::SyncStats junctionStats = ChronoSync::SyncEngine::Sync(srcDir.wstring(), destDir.wstring(), true, callbacks);
+    ChronoSync::SyncStats junctionStats = ChronoSync::SyncEngine::Sync(srcDir.wstring(), destDir.wstring(), true, noFilters, callbacks);
     std::wcout << L"      Junction sync completed. Created: " << junctionStats.dirsCreated << L" dirs/junctions, " << junctionStats.filesCopied << L" files." << std::endl;
 
     // Verify destination junction exists, is a reparse point, and points to the correct target
@@ -203,11 +205,11 @@ int main() {
     BOOL removeSrcOk = RemoveDirectoryW(srcJunction.c_str());
     assert(removeSrcOk && "Failed to remove source junction for pruning test");
 
-    ChronoSync::SyncStats pruneJunctionStats = ChronoSync::SyncEngine::Sync(srcDir.wstring(), destDir.wstring(), true, callbacks);
+    ChronoSync::SyncStats pruneJunctionStats = ChronoSync::SyncEngine::Sync(srcDir.wstring(), destDir.wstring(), true, noFilters, callbacks);
     assert(pruneJunctionStats.itemsDeleted == 1 && "Pruning should delete the junction at destination");
     assert(!fs::exists(destJunction) && "Destination junction should be deleted");
 
-    std::wcout << L"[7/8] Verifying exclusion filters (.chrono_trash, .chrono_tmp)..." << std::endl;
+    std::wcout << L"[7/9] Verifying exclusion filters (.chrono_trash, .chrono_tmp)..." << std::endl;
     // Create excluded items at various depths in source
     fs::path excludedTrashDir = srcDir / L"folder2/nested/.chrono_trash";
     fs::path excludedTmpDir = srcDir / L"folder1/.chrono_tmp";
@@ -221,7 +223,7 @@ int main() {
     WriteTestFile(excludedTrashDir / L"trash_file.txt", "Trash file content");
 
     // Run sync again
-    ChronoSync::SyncEngine::Sync(srcDir.wstring(), destDir.wstring(), true, callbacks);
+    ChronoSync::SyncEngine::Sync(srcDir.wstring(), destDir.wstring(), true, noFilters, callbacks);
 
     // Verify none of the excluded paths exist in destination
     assert(!fs::exists(destDir / L"folder2/nested/.chrono_trash") && ".chrono_trash directory at depth should be excluded");
@@ -229,7 +231,21 @@ int main() {
     assert(!fs::exists(destDir / L"folder1/nested/file.chrono_tmp") && "*.chrono_tmp file should be excluded");
     assert(!fs::exists(destDir / L"folder2/nested/.chrono_tmp") && "*.chrono_tmp file/folder should be excluded");
 
-    std::wcout << L"[8/8] Cleaning up test sandbox..." << std::endl;
+    std::wcout << L"[8/9] Verifying user exclude filters (*.pkl, node_modules, *.zip)..." << std::endl;
+    WriteTestFile(srcDir / L"cache/data.pkl", "pickle payload");
+    WriteTestFile(srcDir / L"archive.zip", "zip payload");
+    WriteTestFile(srcDir / L"node_modules/pkg/index.js", "module payload");
+    WriteTestFile(srcDir / L"allowed.txt", "allowed payload");
+
+    ChronoSync::FilterOptions defaultFilters = ChronoSync::FilterOptions::Defaults();
+    ChronoSync::SyncEngine::Sync(srcDir.wstring(), destDir.wstring(), false, defaultFilters, callbacks);
+
+    assert(!fs::exists(destDir / L"cache/data.pkl") && "*.pkl files should be excluded");
+    assert(!fs::exists(destDir / L"archive.zip") && "*.zip files should be excluded");
+    assert(!fs::exists(destDir / L"node_modules/pkg/index.js") && "node_modules trees should be excluded");
+    assert(fs::exists(destDir / L"allowed.txt") && "non-matching files should still sync");
+
+    std::wcout << L"[9/9] Cleaning up test sandbox..." << std::endl;
     fs::remove_all(sandbox, ec);
 
     std::wcout << L"\n==============================================" << std::endl;

@@ -5,6 +5,7 @@
 #include <vector>
 #include <filesystem>
 #include <functional>
+#include "PathFilter.h"
 
 namespace ChronoSync {
 
@@ -82,13 +83,13 @@ namespace ChronoSync {
     class SyncEngine {
     public:
         // Helper to perform recursive scanning using FindFirstFileW/FindNextFileW
-        static std::vector<SyncItem> ScanDirectory(const std::wstring& rootDir, const SyncCallbacks& callbacks);
+        static std::vector<SyncItem> ScanDirectory(const std::wstring& rootDir, const FilterOptions& filters, const SyncCallbacks& callbacks);
 
         // Run the full synchronization flow
-        static SyncStats Sync(const std::wstring& source, const std::wstring& destination, bool prune, const SyncCallbacks& callbacks);
+        static SyncStats Sync(const std::wstring& source, const std::wstring& destination, bool prune, const FilterOptions& filters, const SyncCallbacks& callbacks);
 
         // Run a dry-run comparison and return preview details
-        static std::vector<PreviewItem> Preview(const std::wstring& source, const std::wstring& destination, bool prune, const SyncCallbacks& callbacks);
+        static std::vector<PreviewItem> Preview(const std::wstring& source, const std::wstring& destination, bool prune, const FilterOptions& filters, const SyncCallbacks& callbacks);
 
         // Restore pruned files from .chrono_trash folder back to destination
         static bool UndoPruning(const std::wstring& destination, const SyncCallbacks& callbacks);

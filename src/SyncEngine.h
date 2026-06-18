@@ -24,7 +24,7 @@ namespace ChronoSync {
     // Represents a planned change in dry-run preview mode
     struct PreviewItem {
         std::wstring relativePath;
-        std::wstring action; // L"Copy (New)", L"Copy (Update)", L"Delete", L"Create Dir", etc.
+        std::wstring action; // L"Copy (New)", L"Copy (Update)", L"Delete (Prune)", L"Remove (Replace)", etc.
         std::wstring sizeStr;
         unsigned long long fileSize = 0;
         bool isReparsePoint = false;

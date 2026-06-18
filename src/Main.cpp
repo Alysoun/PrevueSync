@@ -323,7 +323,9 @@ void RebuildPreviewFilter(PreviewWindowContext* ctx) {
 std::wstring ResolvePreviewExplorerPath(const ChronoSync::PreviewItem& item,
                                         const std::wstring& sourceRoot,
                                         const std::wstring& destRoot) {
-    const std::wstring& root = (item.action == L"Delete") ? destRoot : sourceRoot;
+    const bool targetsDestination =
+        item.action.rfind(L"Delete (", 0) == 0 || item.action.rfind(L"Remove (", 0) == 0;
+    const std::wstring& root = targetsDestination ? destRoot : sourceRoot;
     return root + L"\\" + item.relativePath;
 }
 
@@ -647,7 +649,8 @@ void PreviewThreadProc(std::wstring src, std::wstring dest, ChronoSync::SyncOpti
         PostMessageW(g_hWndMain, WM_SYNC_EVENT, 0, 0);
     };
     callbacks.onCompareComplete = [](size_t dirsToCreate, size_t filesToCopy, size_t itemsToDelete) {
-        std::wstring plan = L"Plan: Create " + std::to_wstring(dirsToCreate) + L" dirs, Copy " + std::to_wstring(filesToCopy) + L" files, Prune " + std::to_wstring(itemsToDelete) + L" items.";
+        std::wstring plan = L"Plan: Create " + std::to_wstring(dirsToCreate) + L" dirs, Copy " + std::to_wstring(filesToCopy)
+                        + L" files, Remove/Delete " + std::to_wstring(itemsToDelete) + L" items.";
         g_MsgRegistry.PushLog(plan);
         PostMessageW(g_hWndMain, WM_SYNC_EVENT, 0, 0);
     };
@@ -687,7 +690,8 @@ void SyncThreadProc(std::wstring src, std::wstring dest, ChronoSync::SyncOptions
     };
 
     callbacks.onCompareComplete = [](size_t dirsToCreate, size_t filesToCopy, size_t itemsToDelete) {
-        std::wstring plan = L"Plan: Create " + std::to_wstring(dirsToCreate) + L" dirs, Copy " + std::to_wstring(filesToCopy) + L" files, Prune " + std::to_wstring(itemsToDelete) + L" items.";
+        std::wstring plan = L"Plan: Create " + std::to_wstring(dirsToCreate) + L" dirs, Copy " + std::to_wstring(filesToCopy)
+                        + L" files, Remove/Delete " + std::to_wstring(itemsToDelete) + L" items.";
         g_MsgRegistry.PushLog(plan);
         PostMessageW(g_hWndMain, WM_SYNC_EVENT, 0, 0);
     };
@@ -756,7 +760,7 @@ void QueueThreadProc(std::vector<ChronoSync::SyncJob> jobs) {
     };
     callbacks.onCompareComplete = [](size_t dirsToCreate, size_t filesToCopy, size_t itemsToDelete) {
         std::wstring plan = L"Plan: Create " + std::to_wstring(dirsToCreate) + L" dirs, Copy " +
-                            std::to_wstring(filesToCopy) + L" files, Prune " + std::to_wstring(itemsToDelete) + L" items.";
+                            std::to_wstring(filesToCopy) + L" files, Remove/Delete " + std::to_wstring(itemsToDelete) + L" items.";
         g_MsgRegistry.PushLog(plan);
         PostMessageW(g_hWndMain, WM_SYNC_EVENT, 0, 0);
     };

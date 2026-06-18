@@ -14,6 +14,12 @@ add_executable(ChronoSync WIN32
     src/Main.cpp
     src/SyncEngine.cpp
     src/SyncEngine.h
+    src/SyncPlan.cpp
+    src/SyncPlan.h
+    src/SyncExecutor.cpp
+    src/SyncExecutor.h
+    src/SyncBackup.cpp
+    src/SyncBackup.h
     src/PathFilter.cpp
     src/PathFilter.h
     src/SyncProfile.cpp
@@ -38,6 +44,12 @@ add_executable(ChronoSyncTests
     tests/TestMain.cpp
     src/SyncEngine.cpp
     src/SyncEngine.h
+    src/SyncPlan.cpp
+    src/SyncPlan.h
+    src/SyncExecutor.cpp
+    src/SyncExecutor.h
+    src/SyncBackup.cpp
+    src/SyncBackup.h
     src/PathFilter.cpp
     src/PathFilter.h
     src/FileHash.cpp

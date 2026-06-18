@@ -334,7 +334,35 @@ int main() {
     std::string destBytes((std::istreambuf_iterator<char>(verify)), std::istreambuf_iterator<char>());
     assert(destBytes == modified && "destination should match modified source after block-compare copy");
 
-    std::wcout << L"[15/15] Cleaning up test sandbox..." << std::endl;
+    std::wcout << L"[15/16] Verifying preview replace deletes when prune is off..." << std::endl;
+    fs::path replaceSrc = sandbox / L"replace_src";
+    fs::path replaceDest = sandbox / L"replace_dest";
+    fs::create_directories(replaceSrc);
+    fs::create_directories(replaceDest);
+    fs::path junctionTarget = replaceSrc / L"junction_target";
+    fs::create_directories(junctionTarget);
+    fs::path previewDestJunction = replaceDest / L"collision_path";
+    assert(CreateTestJunction(previewDestJunction, junctionTarget) && "Failed to create destination junction for preview test");
+    WriteTestFile(replaceSrc / L"collision_path", "source file replaces junction");
+
+    ChronoSync::SyncOptions noPrune = MakeTestOptions(false);
+    std::vector<ChronoSync::PreviewItem> previewItems =
+        ChronoSync::SyncEngine::Preview(replaceSrc.wstring(), replaceDest.wstring(), noPrune, callbacks);
+
+    bool foundReplace = false;
+    bool foundPrune = false;
+    for (const auto& pi : previewItems) {
+        if (pi.action == L"Remove (Replace)" && pi.relativePath == L"collision_path") {
+            foundReplace = true;
+        }
+        if (pi.action == L"Delete (Prune)") {
+            foundPrune = true;
+        }
+    }
+    assert(foundReplace && "preview must show Remove (Replace) for type collisions when prune is off");
+    assert(!foundPrune && "preview must not show prune deletes when prune is disabled");
+
+    std::wcout << L"[16/16] Cleaning up test sandbox..." << std::endl;
     fs::remove_all(sandbox, ec);
 
     std::wcout << L"\n==============================================" << std::endl;

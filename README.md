@@ -83,6 +83,42 @@ Profiles are JSON files with extension `.chronosync`:
 
 Job queues use `.chronoqueue` JSON files with a `jobs` array. Each job mirrors the profile fields above.
 
+## Roadmap
+
+ChronoSync already covers the usual sync-tool checklist (preview, filters, profiles, queues, scheduling, SHA verification, versioned backups, CLI, and more). The next differentiator is **visibility and confidence** — knowing exactly what will happen before files are touched.
+
+### Visibility & confidence (next focus)
+
+| Priority | Feature | Description |
+|----------|---------|-------------|
+| High | **Analyze Plan / "Explain this sync"** | One-click summary: copy/update/delete counts, transfer size, largest files, junction/archive impact, rough duration estimate — not just a raw file list |
+| High | **Sync impact summary** | Pre-sync headline stats: files to copy, data to transfer, potential deletions, link recreations, largest contributors |
+| High | **Risk scoring** | LOW/MEDIUM/HIGH rating with reasons (deletion count, junction replacements, transfer volume, etc.) |
+| Medium | **File-type analytics** | Breakdown by extension/category before sync (images, source, archives, checkpoints, …) |
+| Medium | **Historical change tracking** | Per-sync metadata log (files copied/updated/deleted, bytes moved) with "what changed last week?" queries |
+| Medium | **Snapshot diff viewer** | Compare two points in time (e.g. June 1 vs June 17) for `+ / - / ~` file counts without running a sync |
+
+### Deep Windows integration (performance & reliability)
+
+| Priority | Feature | Description |
+|----------|---------|-------------|
+| Medium | **NTFS USN Journal scanning** | Record USN index after sync; next run queries the change journal instead of full tree walk — O(changes) instead of O(all files) |
+| Medium | **VSS open-file backup** | Optional Volume Shadow Copy snapshot for locked files (`ERROR_SHARING_VIOLATION` during IDE builds, games, databases) |
+| Low | **Sparse file preservation** | Detect `FILE_ATTRIBUTE_SPARSE_FILE`; copy only allocated ranges via `FSCTL_QUERY_ALLOCATED_RANGES` / `FSCTL_SET_SPARSE` so VHDX/PAK backups don't bloat |
+
+### Major scope (later)
+
+| Priority | Feature | Description |
+|----------|---------|-------------|
+| Low | **Bi-directional sync & collision UI** | Split-screen resolver when both sides changed (keep source, keep dest, fork side-by-side) |
+| Low | **Structured profile format** | Replace hand-rolled JSON parser if profiles gain schema versioning or richer nesting |
+
+### Design principle
+
+> **Know exactly what ChronoSync is about to do before you let it touch your files.**
+
+Speed matters, but the standout bet is a smarter preview and plan analysis layer — not another copy-engine trick.
+
 ## License
 
 MIT (see repository for details).

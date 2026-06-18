@@ -22,6 +22,14 @@ add_executable(ChronoSync WIN32
     src/FileHash.h
     src/SyncJob.cpp
     src/SyncJob.h
+    src/NetworkShare.cpp
+    src/NetworkShare.h
+    src/DeltaCopy.cpp
+    src/DeltaCopy.h
+    src/TaskScheduler.cpp
+    src/TaskScheduler.h
+    src/CliRunner.cpp
+    src/CliRunner.h
 )
 target_include_directories(ChronoSync PRIVATE src)
 
@@ -34,6 +42,10 @@ add_executable(ChronoSyncTests
     src/PathFilter.h
     src/FileHash.cpp
     src/FileHash.h
+    src/NetworkShare.cpp
+    src/NetworkShare.h
+    src/DeltaCopy.cpp
+    src/DeltaCopy.h
 )
 target_include_directories(ChronoSyncTests PRIVATE src)
 
@@ -41,14 +53,14 @@ target_include_directories(ChronoSyncTests PRIVATE src)
 if(MSVC)
     target_compile_options(ChronoSync PRIVATE /W4 /WX /EHsc)
     target_compile_options(ChronoSyncTests PRIVATE /W4 /WX /EHsc)
-    target_link_libraries(ChronoSync PRIVATE dwmapi.lib comctl32.lib ole32.lib shell32.lib bcrypt.lib)
+    target_link_libraries(ChronoSync PRIVATE dwmapi.lib comctl32.lib ole32.lib shell32.lib bcrypt.lib mpr.lib)
 else()
     target_compile_options(ChronoSync PRIVATE -Wall -Wextra -Werror)
     target_compile_options(ChronoSyncTests PRIVATE -Wall -Wextra -Werror)
     # Statically link runtime for MinGW/gcc
     target_link_options(ChronoSync PRIVATE -static -static-libgcc -static-libstdc++)
     target_link_options(ChronoSyncTests PRIVATE -static -static-libgcc -static-libstdc++)
-    target_link_libraries(ChronoSync PRIVATE dwmapi comctl32 ole32 shell32 bcrypt)
-    target_link_libraries(ChronoSyncTests PRIVATE bcrypt)
+    target_link_libraries(ChronoSync PRIVATE dwmapi comctl32 ole32 shell32 bcrypt mpr)
+    target_link_libraries(ChronoSyncTests PRIVATE bcrypt mpr)
     target_link_options(ChronoSyncTests PRIVATE -static)
 endif()

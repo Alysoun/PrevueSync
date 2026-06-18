@@ -56,6 +56,7 @@ namespace ChronoSync {
         size_t filesVerified = 0;
         size_t verifyFailures = 0;
         unsigned long long totalBytesCopied = 0;
+        unsigned long long deltaBytesWritten = 0;
         double scanTimeMs = 0.0;
         double compareTimeMs = 0.0;
         double copyTimeMs = 0.0;

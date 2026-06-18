@@ -8,6 +8,8 @@
 #include "SyncEngine.h"
 #include "PathFilter.h"
 #include "SyncOptions.h"
+#include "NetworkShare.h"
+#include "DeltaCopy.h"
 
 namespace fs = std::filesystem;
 
@@ -299,7 +301,40 @@ int main() {
     assert(!fs::exists(destDir / L"versioned_prune_me.txt") && "pruned file should be removed from destination");
     assert(fs::exists(destDir / L".chrono_backups") && "versioned backups root should exist");
 
-    std::wcout << L"[13/13] Cleaning up test sandbox..." << std::endl;
+    std::wcout << L"[13/15] Verifying UNC path helpers..." << std::endl;
+    assert(ChronoSync::NetworkShare::IsUncPath(L"\\\\server\\share\\folder\\file.txt"));
+    assert(!ChronoSync::NetworkShare::IsUncPath(L"C:\\local\\path"));
+    assert(ChronoSync::NetworkShare::GetUncRoot(L"\\\\server\\share\\sub\\file.txt") == L"\\\\server\\share");
+
+    std::wcout << L"[14/15] Verifying atomic block-compare copy..." << std::endl;
+    fs::path deltaSrcDir = sandbox / L"delta_src";
+    fs::path deltaDestDir = sandbox / L"delta_dest";
+    fs::create_directories(deltaSrcDir);
+    fs::create_directories(deltaDestDir);
+
+    const size_t blockSize = 4 * 1024 * 1024;
+    std::string blockA(blockSize, 'A');
+    std::string blockB(blockSize, 'B');
+    std::string deltaContent = blockA + blockB + blockA;
+    WriteTestFile(deltaSrcDir / L"large.bin", deltaContent);
+    WriteTestFile(deltaDestDir / L"large.bin", deltaContent);
+
+    std::string modified = blockA + std::string(blockSize, 'C') + blockA;
+    WriteTestFile(deltaSrcDir / L"large.bin", modified);
+
+    ChronoSync::SyncOptions deltaOpts = MakeTestOptions(false);
+    deltaOpts.deltaBlockCopy = true;
+    ChronoSync::SyncStats deltaStats = ChronoSync::SyncEngine::Sync(
+        deltaSrcDir.wstring(), deltaDestDir.wstring(), deltaOpts, callbacks);
+    assert(deltaStats.filesCopied == 1 && "block-compare sync should copy one changed file");
+    assert(deltaStats.deltaBytesWritten > 0 && deltaStats.deltaBytesWritten < deltaContent.size() &&
+           "deltaBytesWritten should count only changed blocks, not full file size");
+
+    std::ifstream verify(deltaDestDir / L"large.bin", std::ios::binary);
+    std::string destBytes((std::istreambuf_iterator<char>(verify)), std::istreambuf_iterator<char>());
+    assert(destBytes == modified && "destination should match modified source after block-compare copy");
+
+    std::wcout << L"[15/15] Cleaning up test sandbox..." << std::endl;
     fs::remove_all(sandbox, ec);
 
     std::wcout << L"\n==============================================" << std::endl;

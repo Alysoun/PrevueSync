@@ -205,6 +205,7 @@ namespace ChronoSync {
         }
         ExtractJsonBool(objectJson, "verifyAfterCopy", job.options.verifyAfterCopy);
         ExtractJsonBool(objectJson, "versionedBackups", job.options.versionedBackups);
+        ExtractJsonBool(objectJson, "deltaBlockCopy", job.options.deltaBlockCopy);
         ExtractJsonNumber(objectJson, "maxBackupVersions", job.options.maxBackupVersions);
         job.options.filters.includePatterns = ExtractJsonStringArray(objectJson, "includePatterns");
         auto exclude = ExtractJsonStringArray(objectJson, "excludePatterns");
@@ -237,6 +238,7 @@ namespace ChronoSync {
             out << "      \"sha256Compare\": " << (job.options.compareMode == CompareMode::Sha256 ? "true" : "false") << ",\n";
             out << "      \"verifyAfterCopy\": " << (job.options.verifyAfterCopy ? "true" : "false") << ",\n";
             out << "      \"versionedBackups\": " << (job.options.versionedBackups ? "true" : "false") << ",\n";
+            out << "      \"deltaBlockCopy\": " << (job.options.deltaBlockCopy ? "true" : "false") << ",\n";
             out << "      \"maxBackupVersions\": " << job.options.maxBackupVersions << ",\n";
             WritePatternArray(out, "includePatterns", job.options.filters.includePatterns);
             WritePatternArray(out, "excludePatterns", job.options.filters.excludePatterns);

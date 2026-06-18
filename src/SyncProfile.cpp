@@ -203,6 +203,7 @@ namespace ChronoSync {
         out << "  \"sha256Compare\": " << (profile.options.compareMode == CompareMode::Sha256 ? "true" : "false") << ",\n";
         out << "  \"verifyAfterCopy\": " << (profile.options.verifyAfterCopy ? "true" : "false") << ",\n";
         out << "  \"versionedBackups\": " << (profile.options.versionedBackups ? "true" : "false") << ",\n";
+        out << "  \"deltaBlockCopy\": " << (profile.options.deltaBlockCopy ? "true" : "false") << ",\n";
         out << "  \"maxBackupVersions\": " << profile.options.maxBackupVersions << ",\n";
         out << "  \"includePatterns\": [";
         for (size_t i = 0; i < profile.options.filters.includePatterns.size(); ++i) {
@@ -263,6 +264,7 @@ namespace ChronoSync {
         }
         ExtractJsonBool(json, "verifyAfterCopy", loaded.options.verifyAfterCopy);
         ExtractJsonBool(json, "versionedBackups", loaded.options.versionedBackups);
+        ExtractJsonBool(json, "deltaBlockCopy", loaded.options.deltaBlockCopy);
         ExtractJsonNumber(json, "maxBackupVersions", loaded.options.maxBackupVersions);
 
         loaded.options.filters.includePatterns = ExtractJsonStringArray(json, "includePatterns");

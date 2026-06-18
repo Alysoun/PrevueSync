@@ -16,6 +16,8 @@
 #include "SyncProfile.h"
 #include "SyncOptions.h"
 #include "SyncJob.h"
+#include "TaskScheduler.h"
+#include "CliRunner.h"
 
 // Embed modern visual styles manifest when compiling with MSVC
 #ifdef _MSC_VER
@@ -55,7 +57,14 @@ enum ControlIds {
     ID_CLEAR_QUEUE_BUTTON,
     ID_SAVE_QUEUE_BUTTON,
     ID_LOAD_QUEUE_BUTTON,
-    ID_QUEUE_LISTBOX
+    ID_QUEUE_LISTBOX,
+    ID_DELTA_COPY_CHECKBOX,
+    ID_SCHEDULE_BUTTON,
+    ID_SCHEDULE_TIME_EDIT = 9001,
+    ID_SCHEDULE_TYPE_COMBO,
+    ID_SCHEDULE_DAY_COMBO,
+    ID_SCHEDULE_OK,
+    ID_SCHEDULE_CANCEL
 };
 
 // Define thread communications message IDs
@@ -91,6 +100,8 @@ HWND g_hWndRunQueueBtn = NULL;
 HWND g_hWndClearQueueBtn = NULL;
 HWND g_hWndSaveQueueBtn = NULL;
 HWND g_hWndLoadQueueBtn = NULL;
+HWND g_hWndDeltaCopyCheck = NULL;
+HWND g_hWndScheduleBtn = NULL;
 
 std::vector<ChronoSync::SyncJob> g_SyncJobQueue;
 
@@ -201,6 +212,7 @@ ChronoSync::SyncOptions GetSyncOptionsFromUI() {
         : ChronoSync::CompareMode::Timestamp;
     opts.verifyAfterCopy = (SendMessageW(g_hWndVerifyCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
     opts.versionedBackups = (SendMessageW(g_hWndVersionedBackupCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    opts.deltaBlockCopy = (SendMessageW(g_hWndDeltaCopyCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
     opts.maxBackupVersions = 5;
     return opts;
 }
@@ -231,6 +243,7 @@ void ApplyProfileToUI(const ChronoSync::SyncProfile& profile) {
                  profile.options.compareMode == ChronoSync::CompareMode::Sha256 ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(g_hWndVerifyCheck, BM_SETCHECK, profile.options.verifyAfterCopy ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(g_hWndVersionedBackupCheck, BM_SETCHECK, profile.options.versionedBackups ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(g_hWndDeltaCopyCheck, BM_SETCHECK, profile.options.deltaBlockCopy ? BST_CHECKED : BST_UNCHECKED, 0);
     UpdateUndoButtonState(profile.destination);
 }
 
@@ -603,6 +616,8 @@ void SetControlsState(BOOL enabled) {
     EnableWindow(g_hWndSha256Check, enabled);
     EnableWindow(g_hWndVerifyCheck, enabled);
     EnableWindow(g_hWndVersionedBackupCheck, enabled);
+    EnableWindow(g_hWndDeltaCopyCheck, enabled);
+    EnableWindow(g_hWndScheduleBtn, enabled);
     EnableWindow(g_hWndAddQueueBtn, enabled);
     EnableWindow(g_hWndRunQueueBtn, enabled);
     EnableWindow(g_hWndClearQueueBtn, enabled);
@@ -813,6 +828,144 @@ void UndoThreadProc(std::wstring dest) {
     PostMessageW(g_hWndMain, WM_SYNC_UNDO_COMPLETE, 0, 0);
 }
 
+// Schedule dialog state and procedure
+struct ScheduleDialogState {
+    std::wstring profilePath;
+    bool weekly = false;
+    std::wstring dayName = L"MON";
+    int hour = 2;
+    int minute = 0;
+    bool confirmed = false;
+};
+
+LRESULT CALLBACK ScheduleWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    ScheduleDialogState* state = reinterpret_cast<ScheduleDialogState*>(GetWindowLongPtrW(hWnd, GWLP_USERDATA));
+
+    switch (message) {
+        case WM_CREATE: {
+            state = reinterpret_cast<ScheduleDialogState*>(
+                reinterpret_cast<LPCREATESTRUCTW>(lParam)->lpCreateParams);
+            SetWindowLongPtrW(hWnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+
+            CreateWindowExW(0, L"STATIC", L"Profile:", WS_CHILD | WS_VISIBLE, 15, 15, 60, 20, hWnd, NULL, NULL, NULL);
+            CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", state->profilePath.c_str(),
+                            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_READONLY,
+                            80, 12, 250, 24, hWnd, NULL, NULL, NULL);
+
+            CreateWindowExW(0, L"STATIC", L"Run:", WS_CHILD | WS_VISIBLE, 15, 50, 40, 20, hWnd, NULL, NULL, NULL);
+            HWND hwndType = CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
+                                              60, 46, 120, 120, hWnd, (HMENU)ID_SCHEDULE_TYPE_COMBO, NULL, NULL);
+            SendMessageW(hwndType, CB_ADDSTRING, 0, (LPARAM)L"Daily");
+            SendMessageW(hwndType, CB_ADDSTRING, 0, (LPARAM)L"Weekly");
+            SendMessageW(hwndType, CB_SETCURSEL, 0, 0);
+
+            CreateWindowExW(0, L"STATIC", L"Day:", WS_CHILD | WS_VISIBLE, 190, 50, 35, 20, hWnd, NULL, NULL, NULL);
+            HWND hwndDay = CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
+                                           225, 46, 100, 160, hWnd, (HMENU)ID_SCHEDULE_DAY_COMBO, NULL, NULL);
+            const wchar_t* days[] = { L"MON", L"TUE", L"WED", L"THU", L"FRI", L"SAT", L"SUN" };
+            for (const wchar_t* day : days) {
+                SendMessageW(hwndDay, CB_ADDSTRING, 0, (LPARAM)day);
+            }
+            SendMessageW(hwndDay, CB_SETCURSEL, 0, 0);
+
+            CreateWindowExW(0, L"STATIC", L"Time (HH:MM):", WS_CHILD | WS_VISIBLE, 15, 85, 100, 20, hWnd, NULL, NULL, NULL);
+            CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"02:00",
+                            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                            120, 82, 80, 24, hWnd, (HMENU)ID_SCHEDULE_TIME_EDIT, NULL, NULL);
+
+            CreateWindowExW(0, L"BUTTON", L"Create Task", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+                            70, 125, 100, 30, hWnd, (HMENU)ID_SCHEDULE_OK, NULL, NULL);
+            CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                            185, 125, 100, 30, hWnd, (HMENU)ID_SCHEDULE_CANCEL, NULL, NULL);
+            break;
+        }
+        case WM_COMMAND: {
+            if (!state) {
+                break;
+            }
+            int wmId = LOWORD(wParam);
+            if (wmId == ID_SCHEDULE_OK) {
+                HWND hwndType = GetDlgItem(hWnd, ID_SCHEDULE_TYPE_COMBO);
+                HWND hwndDay = GetDlgItem(hWnd, ID_SCHEDULE_DAY_COMBO);
+                HWND hwndTime = GetDlgItem(hWnd, ID_SCHEDULE_TIME_EDIT);
+                state->weekly = (SendMessageW(hwndType, CB_GETCURSEL, 0, 0) == 1);
+
+                wchar_t dayBuf[8] = L"MON";
+                SendMessageW(hwndDay, CB_GETLBTEXT, SendMessageW(hwndDay, CB_GETCURSEL, 0, 0), (LPARAM)dayBuf);
+                state->dayName = dayBuf;
+
+                wchar_t timeBuf[16] = L"02:00";
+                GetWindowTextW(hwndTime, timeBuf, 16);
+                std::wstring timeText = timeBuf;
+                size_t colon = timeText.find(L':');
+                if (colon != std::wstring::npos) {
+                    state->hour = _wtoi(timeText.substr(0, colon).c_str());
+                    state->minute = _wtoi(timeText.substr(colon + 1).c_str());
+                }
+
+                state->confirmed = true;
+                DestroyWindow(hWnd);
+            } else if (wmId == ID_SCHEDULE_CANCEL) {
+                DestroyWindow(hWnd);
+            }
+            break;
+        }
+        case WM_CLOSE:
+            DestroyWindow(hWnd);
+            break;
+        case WM_DESTROY:
+            break;
+        default:
+            return DefWindowProcW(hWnd, message, wParam, lParam);
+    }
+    return 0;
+}
+
+bool RunScheduleDialog(HWND parent, ScheduleDialogState& state) {
+    static bool classRegistered = false;
+    if (!classRegistered) {
+        WNDCLASSEXW wc = { sizeof(WNDCLASSEXW) };
+        wc.lpfnWndProc = ScheduleWndProc;
+        wc.hInstance = GetModuleHandleW(NULL);
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = g_hbrBackground ? g_hbrBackground : reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+        wc.lpszClassName = L"ChronoSyncScheduleWindow";
+        RegisterClassExW(&wc);
+        classRegistered = true;
+    }
+
+    EnableWindow(parent, FALSE);
+    HWND hwndDlg = CreateWindowExW(
+        WS_EX_DLGMODALFRAME,
+        L"ChronoSyncScheduleWindow",
+        L"Schedule Sync",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+        CW_USEDEFAULT, CW_USEDEFAULT, 360, 220,
+        parent, NULL, GetModuleHandleW(NULL), &state);
+
+    if (!hwndDlg) {
+        EnableWindow(parent, TRUE);
+        return false;
+    }
+
+    BOOL useDarkMode = TRUE;
+    DwmSetWindowAttribute(hwndDlg, 19, &useDarkMode, sizeof(useDarkMode));
+    DwmSetWindowAttribute(hwndDlg, 20, &useDarkMode, sizeof(useDarkMode));
+    ShowWindow(hwndDlg, SW_SHOW);
+
+    MSG msg;
+    while (IsWindow(hwndDlg) && GetMessageW(&msg, NULL, 0, 0)) {
+        if (!IsDialogMessageW(hwndDlg, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+
+    EnableWindow(parent, TRUE);
+    SetForegroundWindow(parent);
+    return state.confirmed;
+}
+
 // Child control creator helper
 void CreateControls(HWND hWnd, HINSTANCE hInstance) {
     // Labels (Using bright white text color configured in WM_CTLCOLORSTATIC)
@@ -857,14 +1010,18 @@ void CreateControls(HWND hWnd, HINSTANCE hInstance) {
                                            20, 268, 140, 28, hWnd, (HMENU)ID_SAVE_PROFILE_BUTTON, hInstance, NULL);
     g_hWndLoadProfileBtn = CreateWindowExW(0, L"BUTTON", L"Load Profile...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                                            170, 268, 140, 28, hWnd, (HMENU)ID_LOAD_PROFILE_BUTTON, hInstance, NULL);
+    g_hWndScheduleBtn = CreateWindowExW(0, L"BUTTON", L"Schedule...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                        320, 268, 120, 28, hWnd, (HMENU)ID_SCHEDULE_BUTTON, hInstance, NULL);
 
     g_hWndSha256Check = CreateWindowExW(0, L"BUTTON", L"SHA256 compare", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                        20, 302, 150, 20, hWnd, (HMENU)ID_SHA256_CHECKBOX, hInstance, NULL);
+                                        20, 302, 140, 20, hWnd, (HMENU)ID_SHA256_CHECKBOX, hInstance, NULL);
     g_hWndVerifyCheck = CreateWindowExW(0, L"BUTTON", L"Verify after copy", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                        180, 302, 150, 20, hWnd, (HMENU)ID_VERIFY_COPY_CHECKBOX, hInstance, NULL);
+                                        165, 302, 140, 20, hWnd, (HMENU)ID_VERIFY_COPY_CHECKBOX, hInstance, NULL);
     g_hWndVersionedBackupCheck = CreateWindowExW(0, L"BUTTON", L"Versioned backups", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                                 340, 302, 170, 20, hWnd, (HMENU)ID_VERSIONED_BACKUP_CHECKBOX, hInstance, NULL);
+                                                 310, 302, 140, 20, hWnd, (HMENU)ID_VERSIONED_BACKUP_CHECKBOX, hInstance, NULL);
     SendMessageW(g_hWndVersionedBackupCheck, BM_SETCHECK, BST_CHECKED, 0);
+    g_hWndDeltaCopyCheck = CreateWindowExW(0, L"BUTTON", L"Atomic block compare", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                                           455, 302, 145, 20, hWnd, (HMENU)ID_DELTA_COPY_CHECKBOX, hInstance, NULL);
 
     g_hWndPreviewBtn = CreateWindowExW(0, L"BUTTON", L"Preview Changes", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                                        20, 332, 280, 36, hWnd, (HMENU)ID_PREVIEW_BUTTON, hInstance, NULL);
@@ -917,9 +1074,11 @@ void CreateControls(HWND hWnd, HINSTANCE hInstance) {
     SendMessageW(g_hWndIncludeEdit, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
     SendMessageW(g_hWndSaveProfileBtn, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
     SendMessageW(g_hWndLoadProfileBtn, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+    SendMessageW(g_hWndScheduleBtn, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
     SendMessageW(g_hWndSha256Check, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
     SendMessageW(g_hWndVerifyCheck, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
     SendMessageW(g_hWndVersionedBackupCheck, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+    SendMessageW(g_hWndDeltaCopyCheck, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
     SendMessageW(g_hWndPreviewBtn, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
     SendMessageW(g_hWndSyncBtn, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
     SendMessageW(lblQueue, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
@@ -1071,6 +1230,49 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                     } else {
                         MessageBoxW(hWnd, (L"Failed to load queue: " + error).c_str(), L"ChronoSync Queue", MB_OK | MB_ICONERROR);
                     }
+                }
+            } else if (wmId == ID_SCHEDULE_BUTTON) {
+                ChronoSync::SyncProfile profile = BuildProfileFromUI();
+                if (profile.source.empty() || profile.destination.empty()) {
+                    MessageBoxW(hWnd, L"Please configure source and destination before scheduling.", L"ChronoSync Schedule", MB_OK | MB_ICONWARNING);
+                    break;
+                }
+
+                std::wstring profilePath = SaveProfileDialog(hWnd);
+                if (profilePath.empty()) {
+                    break;
+                }
+
+                std::wstring saveError;
+                if (!ChronoSync::SyncProfileIO::SaveToFile(profile, profilePath, saveError)) {
+                    MessageBoxW(hWnd, (L"Failed to save profile for scheduling: " + saveError).c_str(), L"ChronoSync Schedule", MB_OK | MB_ICONERROR);
+                    break;
+                }
+
+                ScheduleDialogState scheduleState;
+                scheduleState.profilePath = profilePath;
+                if (!RunScheduleDialog(hWnd, scheduleState)) {
+                    break;
+                }
+
+                wchar_t exePath[MAX_PATH] = {};
+                GetModuleFileNameW(NULL, exePath, MAX_PATH);
+                std::wstring taskName = ChronoSync::TaskScheduler::SanitizeTaskName(profile.name);
+                std::wstring scheduleError;
+                bool scheduled = scheduleState.weekly
+                    ? ChronoSync::TaskScheduler::CreateWeeklyTask(taskName, exePath, profilePath, scheduleState.hour, scheduleState.minute, scheduleState.dayName, scheduleError)
+                    : ChronoSync::TaskScheduler::CreateDailyTask(taskName, exePath, profilePath, scheduleState.hour, scheduleState.minute, scheduleError);
+
+                if (scheduled) {
+                    wchar_t timeMsg[32] = {};
+                    swprintf_s(timeMsg, L"%02d:%02d", scheduleState.hour, scheduleState.minute);
+                    std::wstring msg = L"Scheduled task created:\n" + taskName + L"\nTime: " + timeMsg;
+                    if (scheduleState.weekly) {
+                        msg += L"\nDay: " + scheduleState.dayName;
+                    }
+                    MessageBoxW(hWnd, msg.c_str(), L"ChronoSync Schedule", MB_OK | MB_ICONINFORMATION);
+                } else {
+                    MessageBoxW(hWnd, (L"Failed to create scheduled task: " + scheduleError).c_str(), L"ChronoSync Schedule", MB_OK | MB_ICONERROR);
                 }
             } else if (wmId == ID_SAVE_PROFILE_BUTTON) {
                 ChronoSync::SyncProfile profile = BuildProfileFromUI();
@@ -1590,6 +1792,11 @@ LRESULT CALLBACK PreviewWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     (void)hPrevInstance;
     (void)lpCmdLine;
+
+    int cliExitCode = 0;
+    if (ChronoSync::CliRunner::TryRun(cliExitCode)) {
+        return cliExitCode;
+    }
 
     // Initialize COM Apartment Model (needed for modern folder browse picker)
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);

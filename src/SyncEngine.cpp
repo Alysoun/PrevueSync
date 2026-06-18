@@ -1,5 +1,7 @@
 #include "SyncEngine.h"
 #include "FileHash.h"
+#include "NetworkShare.h"
+#include "DeltaCopy.h"
 #include <windows.h>
 #include <iostream>
 #include <fstream>
@@ -243,6 +245,20 @@ namespace ChronoSync {
             return stats;
         }
 
+        std::wstring networkError;
+        if (!NetworkShare::EnsureAccessible(source, networkError)) {
+            if (callbacks.onLog) {
+                callbacks.onLog(networkError, true);
+            }
+            return stats;
+        }
+        if (!NetworkShare::EnsureAccessible(destination, networkError)) {
+            if (callbacks.onLog) {
+                callbacks.onLog(networkError, true);
+            }
+            return stats;
+        }
+
         // 2. Scan source directory
         auto scanStart = std::chrono::high_resolution_clock::now();
         std::vector<SyncItem> srcItems = ScanDirectory(source, filters, callbacks);
@@ -457,27 +473,70 @@ namespace ChronoSync {
             // Create parent directories if missing (safety check)
             std::filesystem::create_directories(destPath.parent_path(), ec);
 
-            // Clean up any existing temp file
             std::filesystem::remove(tmpPath, ec);
 
-            CopyContext context;
-            context.progressCallback = callbacks.onCopyProgress;
+            bool copySuccess = false;
+            std::wstring copyError;
+            const bool destExists = std::filesystem::exists(destPath, ec);
+            const bool canUseDelta = options.deltaBlockCopy && destExists &&
+                                     std::filesystem::file_size(destPath, ec) == fileItem.fileSize;
 
-            // Perform kernel-optimized copy to temp file
-            BOOL copySuccess = CopyFileExW(
-                srcPath.c_str(),
-                tmpPath.c_str(),
-                (LPPROGRESS_ROUTINE)CopyProgressCallback,
-                &context,
-                NULL,
-                0
-            );
+            unsigned long long bytesCounted = fileItem.fileSize;
+
+            if (canUseDelta) {
+                auto deltaResult = DeltaCopy::CopyFileBlocks(
+                    srcPath.wstring(),
+                    destPath.wstring(),
+                    fileItem.fileSize,
+                    callbacks.onCopyProgress);
+                copySuccess = deltaResult.success;
+                copyError = deltaResult.errorMessage;
+                if (copySuccess) {
+                    bytesCounted = deltaResult.bytesWritten;
+                    stats.deltaBytesWritten += deltaResult.bytesWritten;
+                }
+            } else {
+                CopyContext context;
+                context.progressCallback = callbacks.onCopyProgress;
+
+                for (int attempt = 0; attempt < 3; ++attempt) {
+                    std::filesystem::remove(tmpPath, ec);
+                    copySuccess = CopyFileExW(
+                        srcPath.c_str(),
+                        tmpPath.c_str(),
+                        (LPPROGRESS_ROUTINE)CopyProgressCallback,
+                        &context,
+                        NULL,
+                        0
+                    ) != FALSE;
+
+                    if (copySuccess) {
+                        break;
+                    }
+
+                    DWORD err = GetLastError();
+                    copyError = L"CopyFileExW failed. Win32 Error: " + std::to_wstring(err);
+                    if (!NetworkShare::IsRetryableNetworkError(err) || attempt == 2) {
+                        break;
+                    }
+                    if (NetworkShare::IsUncPath(destination)) {
+                        NetworkShare::EnsureAccessible(destination, networkError);
+                    }
+                    Sleep(500);
+                }
+
+                if (copySuccess) {
+                    copySuccess = MoveFileExW(tmpPath.c_str(), destPath.c_str(),
+                                              MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
+                    if (!copySuccess) {
+                        DWORD err = GetLastError();
+                        copyError = L"Atomic move failed. Win32 Error: " + std::to_wstring(err);
+                        std::filesystem::remove(tmpPath, ec);
+                    }
+                }
+            }
 
             if (copySuccess) {
-                // Perform the atomic Move operation
-                BOOL moveSuccess = MoveFileExW(tmpPath.c_str(), destPath.c_str(), 
-                                              MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-                if (moveSuccess) {
                     // Explicitly set the timestamp on the destination file to preserve 100ns precision post-swap
                     HANDLE hFile = CreateFileW(destPath.c_str(), FILE_WRITE_ATTRIBUTES,
                                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -500,7 +559,7 @@ namespace ChronoSync {
 
                     if (copyOk) {
                         stats.filesCopied++;
-                        stats.totalBytesCopied += fileItem.fileSize;
+                        stats.totalBytesCopied += bytesCounted;
 
                         if (callbacks.onCopyComplete) {
                             callbacks.onCopyComplete(fileItem.relativePath, true, L"");
@@ -514,20 +573,9 @@ namespace ChronoSync {
                             callbacks.onLog(L"Verification failed: " + fileItem.relativePath, true);
                         }
                     }
-                } else {
-                    DWORD err = GetLastError();
-                    std::wstring errStr = L"Atomic move failed. Win32 Error: " + std::to_wstring(err);
-                    std::filesystem::remove(tmpPath, ec);
-                    if (callbacks.onCopyComplete) {
-                        callbacks.onCopyComplete(fileItem.relativePath, false, errStr);
-                    }
-                }
             } else {
-                DWORD err = GetLastError();
-                std::wstring errStr = L"CopyFileExW failed. Win32 Error: " + std::to_wstring(err);
-                std::filesystem::remove(tmpPath, ec);
                 if (callbacks.onCopyComplete) {
-                    callbacks.onCopyComplete(fileItem.relativePath, false, errStr);
+                    callbacks.onCopyComplete(fileItem.relativePath, false, copyError);
                 }
             }
         }

@@ -17,6 +17,7 @@ namespace ChronoSync {
         bool verifyAfterCopy = false;
         bool versionedBackups = true;
         size_t maxBackupVersions = 5;
+        bool deltaBlockCopy = false;
     };
 
 } // namespace ChronoSync

@@ -3,6 +3,7 @@
 #include "SyncExecutor.h"
 #include "SyncBackup.h"
 #include "NetworkShare.h"
+#include "SyncPlanAnalysis.h"
 #include <windows.h>
 #include <chrono>
 
@@ -167,51 +168,7 @@ namespace ChronoSync {
     }
 
     std::vector<PreviewItem> SyncEngine::Preview(const std::wstring& source, const std::wstring& destination, const SyncOptions& options, const SyncCallbacks& callbacks) {
-        std::filesystem::path srcRoot(source);
-        std::filesystem::path destRoot(destination);
-
-        if (!std::filesystem::exists(srcRoot)) {
-            if (callbacks.onLog) {
-                callbacks.onLog(L"Source directory does not exist: " + source, true);
-            }
-            return {};
-        }
-
-        std::vector<SyncItem> srcItems = ScanDirectory(source, options.filters, callbacks);
-        std::vector<SyncItem> destItems;
-        if (std::filesystem::exists(destRoot)) {
-            destItems = ScanDirectory(destination, options.filters, callbacks);
-        }
-
-        if (callbacks.onCompareStart) {
-            callbacks.onCompareStart();
-        }
-
-        std::unordered_map<std::wstring, SyncItem> destMap;
-        for (const auto& item : destItems) {
-            destMap[item.relativePath] = item;
-        }
-
-        SyncPlan plan = BuildSyncPlan(srcItems, destItems, srcRoot, destRoot, options);
-        std::vector<PreviewItem> previewList = BuildPreviewList(plan, destMap);
-
-        if (callbacks.onCompareComplete) {
-            size_t dirs = 0;
-            size_t copies = 0;
-            size_t deletes = 0;
-            for (const auto& pi : previewList) {
-                if (pi.action == L"Create Dir") {
-                    dirs++;
-                } else if (pi.action == L"Delete (Prune)" || pi.action == L"Remove (Replace)") {
-                    deletes++;
-                } else {
-                    copies++;
-                }
-            }
-            callbacks.onCompareComplete(dirs, copies, deletes);
-        }
-
-        return previewList;
+        return BuildSyncPlanReport(source, destination, options, callbacks).previewItems;
     }
 
     bool SyncEngine::HasRestorableBackups(const std::wstring& destination) {

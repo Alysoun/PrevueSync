@@ -17,6 +17,7 @@ High-performance native Windows folder synchronizer with differential sync, prev
 - **Preview dialog** — virtual ListView with sort, search/filter, CSV export, and right-click **Show in File Explorer**
 - **Include/exclude filters** — glob patterns (default excludes: `*.pkl`, `node_modules`, `*.zip`)
 - **Sync profiles** — save/load source, destination, prune, filters, and compare options (`.chronosync` JSON)
+- **Plan analysis** — **Analyze Plan** summarizes transfer size, largest files, file-type breakdown, duration estimate, and LOW/MEDIUM/HIGH risk before syncing; preview shows risk headline
 
 ## Build
 
@@ -91,9 +92,9 @@ ChronoSync already covers the usual sync-tool checklist (preview, filters, profi
 
 | Priority | Feature | Description |
 |----------|---------|-------------|
-| High | **Analyze Plan / "Explain this sync"** | One-click summary: copy/update/delete counts, transfer size, largest files, junction/archive impact, rough duration estimate — not just a raw file list |
-| High | **Sync impact summary** | Pre-sync headline stats: files to copy, data to transfer, potential deletions, link recreations, largest contributors |
-| High | **Risk scoring** | LOW/MEDIUM/HIGH rating with reasons (deletion count, junction replacements, transfer volume, etc.) |
+| High | **Analyze Plan / "Explain this sync"** | Done — impact summary, risk scoring, file-type breakdown, largest files, duration estimate |
+| High | **Sync impact summary** | Done — integrated into Analyze Plan and preview risk headline |
+| High | **Risk scoring** | Done — LOW/MEDIUM/HIGH with human-readable reasons |
 | Medium | **File-type analytics** | Breakdown by extension/category before sync (images, source, archives, checkpoints, …) |
 | Medium | **Historical change tracking** | Per-sync metadata log (files copied/updated/deleted, bytes moved) with "what changed last week?" queries |
 | Medium | **Snapshot diff viewer** | Compare two points in time (e.g. June 1 vs June 17) for `+ / - / ~` file counts without running a sync |

@@ -10,6 +10,7 @@
 #include "SyncOptions.h"
 #include "NetworkShare.h"
 #include "DeltaCopy.h"
+#include "SyncPlanAnalysis.h"
 
 namespace fs = std::filesystem;
 
@@ -362,7 +363,18 @@ int main() {
     assert(foundReplace && "preview must show Remove (Replace) for type collisions when prune is off");
     assert(!foundPrune && "preview must not show prune deletes when prune is disabled");
 
-    std::wcout << L"[16/16] Cleaning up test sandbox..." << std::endl;
+    std::wcout << L"[16/17] Verifying plan analysis and risk scoring..." << std::endl;
+    auto analysisReport = ChronoSync::BuildSyncPlanReport(
+        replaceSrc.wstring(), replaceDest.wstring(), noPrune, callbacks);
+    assert(analysisReport.analysis.deletesReplace >= 1 && "analysis should count replacement deletions");
+    assert(analysisReport.analysis.filesToCopyUpdate + analysisReport.analysis.filesToCopyNew >= 1);
+    assert(analysisReport.analysis.risk == ChronoSync::RiskLevel::Medium ||
+           analysisReport.analysis.risk == ChronoSync::RiskLevel::High);
+    std::wstring reportText = ChronoSync::FormatSyncPlanReport(analysisReport.analysis);
+    assert(reportText.find(L"Risk:") != std::wstring::npos);
+    assert(reportText.find(L"Largest files:") != std::wstring::npos || analysisReport.analysis.largestFiles.empty());
+
+    std::wcout << L"[17/17] Cleaning up test sandbox..." << std::endl;
     fs::remove_all(sandbox, ec);
 
     std::wcout << L"\n==============================================" << std::endl;

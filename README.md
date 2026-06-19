@@ -1,6 +1,6 @@
 # ChronoSync
 
-High-performance native Windows folder synchronizer with differential sync, preview, pruning with undo, and a dark-themed GUI.
+Native Windows folder synchronizer with differential sync, preview, pruning with undo, and a dark-themed GUI.
 
 **Design goal:** confidence before execution — know exactly what will happen before files are touched.
 

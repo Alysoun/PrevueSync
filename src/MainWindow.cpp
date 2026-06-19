@@ -32,6 +32,26 @@ static bool g_logSplitterDragging = false;
 static int g_logSplitterDragStartY = 0;
 static int g_logSplitterBiasStart = 0;
 
+static constexpr int kEtaLabelW = 118;
+
+static void ClearEtaLabel() {
+    if (g_hWndEtaLabel) {
+        SetWindowTextW(g_hWndEtaLabel, L"");
+    }
+}
+
+static void ApplyProgressBarUi(HWND hwndBar, int pct) {
+    if (!hwndBar) {
+        return;
+    }
+    SendMessageW(hwndBar, PBM_SETMARQUEE, FALSE, 0);
+    SendMessageW(hwndBar, PBM_SETPOS, pct, 0);
+}
+
+static void ResetProgressBarUi(HWND hwndBar) {
+    ApplyProgressBarUi(hwndBar, 0);
+}
+
 static std::wstring FormatRiskSummary(const PrevueSync::SyncPlanAnalysis& analysis) {
     std::wstringstream ss;
     ss << L"Risk: " << PrevueSync::RiskLevelToString(analysis.risk);
@@ -272,7 +292,10 @@ static void LayoutMainWindow(HWND hWnd, int cx, int cy) {
     moveBtn(g_hWndLoadQueueBtn, m + (queueBtnW + 8) * 4, y, queueBtnW, bh);
     y += bh + UiTheme::SectionGap;
 
-    MoveWindow(g_hWndStatusLabel, m, y, w, 22, TRUE);
+    MoveWindow(g_hWndStatusLabel, m, y, std::max(w - kEtaLabelW - 8, 120), 22, TRUE);
+    if (g_hWndEtaLabel) {
+        MoveWindow(g_hWndEtaLabel, m + w - kEtaLabelW, y, kEtaLabelW, 22, TRUE);
+    }
     y += 26;
 
     const int riskW = static_cast<int>(w * 0.58);
@@ -492,15 +515,18 @@ static void CreateControls(HWND hWnd, HINSTANCE hInstance) {
                                          m + (queueBtnW + 8) * 4, y, queueBtnW, bh, hWnd, (HMENU)ID_LOAD_QUEUE_BUTTON, hInstance, NULL);
     y += bh + UiTheme::SectionGap;
 
-    g_hWndStatusLabel = CreateWindowExW(0, L"STATIC", L"Ready", WS_CHILD | WS_VISIBLE,
-                                        m, y, w, 22, hWnd, (HMENU)ID_STATUS_LABEL, hInstance, NULL);
+    g_hWndStatusLabel = CreateWindowExW(0, L"STATIC", L"Ready", WS_CHILD | WS_VISIBLE | SS_ENDELLIPSIS,
+                                        m, y, w - kEtaLabelW - 8, 22, hWnd, (HMENU)ID_STATUS_LABEL, hInstance, NULL);
+    g_hWndEtaLabel = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_RIGHT,
+                                     m + w - kEtaLabelW, y, kEtaLabelW, 22, hWnd, (HMENU)ID_ETA_LABEL, hInstance, NULL);
     y += 26;
     g_hWndRiskLabel = CreateWindowExW(0, L"STATIC",
                                       L"Risk: \u2014  |  Run Analyze Plan for impact summary",
                                       WS_CHILD | WS_VISIBLE,
                                       m, y, w / 2, 22, hWnd, (HMENU)ID_RISK_LABEL, hInstance, NULL);
-    g_hWndProgressBar = CreateWindowExW(0, PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE,
+    g_hWndProgressBar = CreateWindowExW(0, PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE | PBS_SMOOTH,
                                         m + w / 2 + 8, y, w / 2 - 8, 22, hWnd, (HMENU)ID_PROGRESS_BAR, hInstance, NULL);
+    SendMessageW(g_hWndProgressBar, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
     y += 28;
 
     g_hWndDisclaimerLink = CreateWindowExW(0, L"STATIC",
@@ -574,6 +600,7 @@ static void CreateControls(HWND hWnd, HINSTANCE hInstance) {
     setUIFont(g_hWndLoadQueueBtn);
     setUIFont(g_hWndCopyLogBtn);
     setUIFont(g_hWndStatusLabel);
+    setUIFont(g_hWndEtaLabel);
     setUIFont(g_hWndRiskLabel);
     setUIFont(g_hWndDisclaimerLink);
     SendMessageW(g_hWndLogEdit, WM_SETFONT, (WPARAM)g_hFontLog, TRUE);
@@ -1006,11 +1033,16 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPar
             for (;;) {
                 std::vector<std::wstring> drainedLogs;
                 std::wstring drainedStatus;
+                std::wstring drainedEta;
                 int drainedProgress = 0;
+                bool drainedMarquee = false;
                 bool statusChanged = false;
+                bool etaChanged = false;
                 bool progressChanged = false;
+                bool marqueeChanged = false;
 
-                if (!g_MsgRegistry.Drain(drainedLogs, drainedStatus, drainedProgress, statusChanged, progressChanged)) {
+                if (!g_MsgRegistry.Drain(drainedLogs, drainedStatus, drainedEta, drainedProgress, drainedMarquee,
+                                         statusChanged, etaChanged, progressChanged, marqueeChanged)) {
                     break;
                 }
 
@@ -1037,8 +1069,12 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPar
                     SetWindowTextW(g_hWndStatusLabel, drainedStatus.c_str());
                 }
 
-                if (progressChanged) {
-                    SendMessageW(g_hWndProgressBar, PBM_SETPOS, drainedProgress, 0);
+                if (etaChanged && g_hWndEtaLabel) {
+                    SetWindowTextW(g_hWndEtaLabel, drainedEta.c_str());
+                }
+
+                if (progressChanged || marqueeChanged) {
+                    ApplyProgressBarUi(g_hWndProgressBar, drainedProgress);
                 }
             }
 
@@ -1051,8 +1087,9 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPar
             g_SyncRunning = false;
             SetControlsState(TRUE);
 
-            SendMessageW(g_hWndProgressBar, PBM_SETPOS, 0, 0);
+            ResetProgressBarUi(g_hWndProgressBar);
             SetWindowTextW(g_hWndStatusLabel, L"Ready");
+            ClearEtaLabel();
 
             std::unique_ptr<PrevueSync::SyncStats> pStats((PrevueSync::SyncStats*)lParam);
             if (pStats) {
@@ -1083,8 +1120,15 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPar
         case WM_SYNC_PREVIEW_COMPLETE: {
             g_SyncRunning = false;
             SetControlsState(TRUE);
-            SendMessageW(g_hWndProgressBar, PBM_SETPOS, 0, 0);
+            ResetProgressBarUi(g_hWndProgressBar);
             SetWindowTextW(g_hWndStatusLabel, L"Ready");
+            ClearEtaLabel();
+
+            if (wParam != 0) {
+                MessageBoxW(hWnd, L"Preview failed. See the operation log for details.", L"PrevueSync Preview",
+                            MB_OK | MB_ICONERROR);
+                break;
+            }
 
             std::unique_ptr<PreviewLaunchData> launchBundle(reinterpret_cast<PreviewLaunchData*>(lParam));
 
@@ -1093,6 +1137,7 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPar
             UpdateUndoButtonState(dest);
 
             if (!launchBundle || !launchBundle->pList) {
+                MessageBoxW(hWnd, L"Preview failed or returned no data.", L"PrevueSync Preview", MB_OK | MB_ICONERROR);
                 break;
             }
 
@@ -1131,11 +1176,19 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPar
         case WM_SYNC_ANALYZE_COMPLETE: {
             g_SyncRunning = false;
             SetControlsState(TRUE);
-            SendMessageW(g_hWndProgressBar, PBM_SETPOS, 0, 0);
+            ResetProgressBarUi(g_hWndProgressBar);
             SetWindowTextW(g_hWndStatusLabel, L"Ready");
+            ClearEtaLabel();
+
+            if (wParam != 0) {
+                MessageBoxW(hWnd, L"Analyze failed. See the operation log for details.", L"PrevueSync Analyze",
+                            MB_OK | MB_ICONERROR);
+                break;
+            }
 
             std::unique_ptr<AnalyzeCompleteData> data(reinterpret_cast<AnalyzeCompleteData*>(lParam));
             if (!data) {
+                MessageBoxW(hWnd, L"Analyze failed or returned no data.", L"PrevueSync Analyze", MB_OK | MB_ICONERROR);
                 break;
             }
 
@@ -1151,15 +1204,17 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPar
             SetControlsState(TRUE);
             EnableWindow(g_hWndUndoBtn, FALSE);
             SetWindowTextW(g_hWndStatusLabel, L"Ready");
-            SendMessageW(g_hWndProgressBar, PBM_SETPOS, 0, 0);
+            ResetProgressBarUi(g_hWndProgressBar);
+            ClearEtaLabel();
             MessageBoxW(hWnd, L"Undo complete. Pruned items have been restored successfully.", L"PrevueSync Undo", MB_OK | MB_ICONINFORMATION);
             break;
         }
         case WM_SYNC_QUEUE_COMPLETE: {
             g_SyncRunning = false;
             SetControlsState(TRUE);
-            SendMessageW(g_hWndProgressBar, PBM_SETPOS, 0, 0);
+            ResetProgressBarUi(g_hWndProgressBar);
             SetWindowTextW(g_hWndStatusLabel, L"Ready");
+            ClearEtaLabel();
 
             size_t totalJobs = static_cast<size_t>(wParam);
             std::unique_ptr<size_t> pCompleted(reinterpret_cast<size_t*>(lParam));

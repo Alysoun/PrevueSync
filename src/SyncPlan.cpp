@@ -90,6 +90,23 @@ namespace PrevueSync {
             srcRelPaths.insert(item.relativePath);
         }
 
+        size_t shaCompareTotal = 0;
+        if (useSha256) {
+            for (const auto& srcItem : srcItems) {
+                if (srcItem.isDirectory || srcItem.isReparsePoint) {
+                    continue;
+                }
+                auto it = destMap.find(srcItem.relativePath);
+                if (it == destMap.end() || it->second.isReparsePoint) {
+                    continue;
+                }
+                if (srcItem.fileSize == it->second.fileSize) {
+                    shaCompareTotal++;
+                }
+            }
+        }
+        size_t shaCompareIndex = 0;
+
         for (const auto& srcItem : srcItems) {
             auto it = destMap.find(srcItem.relativePath);
             if (srcItem.isReparsePoint) {
@@ -126,6 +143,12 @@ namespace PrevueSync {
                     } else {
                         std::filesystem::path srcPath = WinPath::Join(srcRoot, srcItem.relativePath);
                         std::filesystem::path destPath = WinPath::Join(destRoot, srcItem.relativePath);
+                        if (useSha256 && srcItem.fileSize == destItem.fileSize) {
+                            ++shaCompareIndex;
+                            if (callbacks.onCompareFileBegin) {
+                                callbacks.onCompareFileBegin(shaCompareIndex, shaCompareTotal, srcItem.relativePath);
+                            }
+                        }
                         needsCopy = FileContentsDiffer(srcPath, destPath, srcItem, destItem, options.compareMode,
                                                        useSha256 ? &hashSession : nullptr,
                                                        useSha256 ? &hashCache : nullptr,

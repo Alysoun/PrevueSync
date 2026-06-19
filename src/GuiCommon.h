@@ -39,6 +39,7 @@ enum ControlIds {
     ID_SYNC_BUTTON,
     ID_PROGRESS_BAR,
     ID_STATUS_LABEL,
+    ID_ETA_LABEL,
     ID_LOG_EDIT,
     ID_UNDO_BUTTON,
     ID_EXPORT_CSV_BUTTON,
@@ -92,18 +93,25 @@ struct SyncMessageRegistry {
     std::mutex mtx;
     std::vector<std::wstring> logs;
     std::wstring status;
+    std::wstring eta;
     int progressPct = 0;
+    bool progressMarquee = false;
     bool progressChanged = false;
+    bool progressMarqueeChanged = false;
     bool statusChanged = false;
+    bool etaChanged = false;
     bool logOverflowNotified = false;
 
     void PushLog(const std::wstring& line);
     void SetStatus(const std::wstring& stat);
+    void SetEta(const std::wstring& etaText);
     void SetProgress(int pct);
+    void SetProgressMarquee(bool enabled);
     void ResetForNewRun();
     bool HasPending();
-    bool Drain(std::vector<std::wstring>& outLogs, std::wstring& outStatus, int& outProgress,
-               bool& outStatusChanged, bool& outProgressChanged);
+    bool Drain(std::vector<std::wstring>& outLogs, std::wstring& outStatus, std::wstring& outEta, int& outProgress,
+               bool& outProgressMarquee, bool& outStatusChanged, bool& outEtaChanged, bool& outProgressChanged,
+               bool& outProgressMarqueeChanged);
 };
 
 void RequestSyncUiEvent();
@@ -136,6 +144,7 @@ extern HWND g_hWndAnalyzeBtn;
 extern HWND g_hWndSyncBtn;
 extern HWND g_hWndProgressBar;
 extern HWND g_hWndStatusLabel;
+extern HWND g_hWndEtaLabel;
 extern HWND g_hWndLogEdit;
 extern HWND g_hWndExcludeEdit;
 extern HWND g_hWndIncludeEdit;

@@ -89,6 +89,10 @@ namespace PrevueSync {
 
                 items.push_back(item);
 
+                if (callbacks.onScanProgress && (items.size() == 1 || items.size() % 2000 == 0)) {
+                    callbacks.onScanProgress(items.size(), relPath);
+                }
+
                 if (item.isDirectory) {
                     if (callbacks.onScanDir) {
                         callbacks.onScanDir(relPath);
@@ -112,6 +116,10 @@ namespace PrevueSync {
         std::filesystem::path scanRoot = WinPath::NormalizeRoot(rootDir);
         if (std::filesystem::exists(scanRoot)) {
             ScanDirectoryHelper(scanRoot.wstring(), L"", filters, items, callbacks);
+        }
+
+        if (callbacks.onScanProgress && !items.empty()) {
+            callbacks.onScanProgress(items.size(), items.back().relativePath);
         }
 
         if (callbacks.onScanComplete) {

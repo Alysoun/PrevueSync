@@ -36,6 +36,7 @@ namespace PrevueSync {
     struct SyncCallbacks {
         std::function<void(const std::wstring& rootDir)> onScanStart;
         std::function<void(const std::wstring& subDir)> onScanDir;
+        std::function<void(size_t itemsFound, const std::wstring& currentPath)> onScanProgress;
         std::function<void(size_t totalItems)> onScanComplete;
         std::function<void()> onCompareStart;
         std::function<void(size_t dirsToCreate, size_t filesToCopy, size_t itemsToDelete)> onCompareComplete;
@@ -45,6 +46,7 @@ namespace PrevueSync {
         std::function<void(const std::wstring& relPath, bool isDirectory)> onDeleteItem;
         std::function<void(const std::wstring& relPath, const std::wstring& errorMessage)> onDeleteFailed;
         std::function<void(const std::wstring& message, bool isError)> onLog;
+        std::function<void(size_t fileIndex, size_t totalFiles, const std::wstring& relPath)> onCompareFileBegin;
         std::function<void(const std::wstring& relPath, unsigned long long bytesHashed, unsigned long long fileSize, bool hashingSource)> onHashProgress;
     };
 

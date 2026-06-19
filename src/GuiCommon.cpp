@@ -15,6 +15,7 @@ HWND g_hWndAnalyzeBtn = NULL;
 HWND g_hWndSyncBtn = NULL;
 HWND g_hWndProgressBar = NULL;
 HWND g_hWndStatusLabel = NULL;
+HWND g_hWndEtaLabel = NULL;
 HWND g_hWndLogEdit = NULL;
 HWND g_hWndExcludeEdit = NULL;
 HWND g_hWndIncludeEdit = NULL;
@@ -102,10 +103,41 @@ void SyncMessageRegistry::SetStatus(const std::wstring& stat) {
     RequestSyncUiEvent();
 }
 
+void SyncMessageRegistry::SetEta(const std::wstring& etaText) {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (eta != etaText) {
+        eta = etaText;
+        etaChanged = true;
+        RequestSyncUiEvent();
+    }
+}
+
 void SyncMessageRegistry::SetProgress(int pct) {
     std::lock_guard<std::mutex> lock(mtx);
+    if (pct < 0) {
+        pct = 0;
+    } else if (pct > 100) {
+        pct = 100;
+    }
     progressPct = pct;
     progressChanged = true;
+    if (progressMarquee) {
+        progressMarquee = false;
+        progressMarqueeChanged = true;
+    }
+    RequestSyncUiEvent();
+}
+
+void SyncMessageRegistry::SetProgressMarquee(bool enabled) {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (progressMarquee != enabled) {
+        progressMarquee = enabled;
+        progressMarqueeChanged = true;
+    }
+    if (enabled) {
+        progressPct = 0;
+        progressChanged = false;
+    }
     RequestSyncUiEvent();
 }
 
@@ -113,25 +145,32 @@ void SyncMessageRegistry::ResetForNewRun() {
     std::lock_guard<std::mutex> lock(mtx);
     logs.clear();
     status.clear();
+    eta.clear();
     progressPct = 0;
+    progressMarquee = false;
     progressChanged = false;
+    progressMarqueeChanged = false;
     statusChanged = false;
+    etaChanged = false;
     logOverflowNotified = false;
 }
 
 bool SyncMessageRegistry::HasPending() {
     std::lock_guard<std::mutex> lock(mtx);
-    return !logs.empty() || statusChanged || progressChanged;
+    return !logs.empty() || statusChanged || etaChanged || progressChanged || progressMarqueeChanged;
 }
 
-bool SyncMessageRegistry::Drain(std::vector<std::wstring>& outLogs, std::wstring& outStatus, int& outProgress,
-                                bool& outStatusChanged, bool& outProgressChanged) {
+bool SyncMessageRegistry::Drain(std::vector<std::wstring>& outLogs, std::wstring& outStatus, std::wstring& outEta,
+                                int& outProgress, bool& outProgressMarquee, bool& outStatusChanged, bool& outEtaChanged,
+                                bool& outProgressChanged, bool& outProgressMarqueeChanged) {
     std::lock_guard<std::mutex> lock(mtx);
 
     outStatusChanged = statusChanged;
+    outEtaChanged = etaChanged;
     outProgressChanged = progressChanged;
+    outProgressMarqueeChanged = progressMarqueeChanged;
 
-    if (logs.empty() && !statusChanged && !progressChanged) {
+    if (logs.empty() && !statusChanged && !etaChanged && !progressChanged && !progressMarqueeChanged) {
         return false;
     }
 
@@ -142,9 +181,19 @@ bool SyncMessageRegistry::Drain(std::vector<std::wstring>& outLogs, std::wstring
         outStatus = status;
         statusChanged = false;
     }
+    if (etaChanged) {
+        outEta = eta;
+        etaChanged = false;
+    }
     if (progressChanged) {
         outProgress = progressPct;
         progressChanged = false;
+    }
+    if (progressMarqueeChanged) {
+        outProgressMarquee = progressMarquee;
+        progressMarqueeChanged = false;
+    } else {
+        outProgressMarquee = progressMarquee;
     }
     return true;
 }

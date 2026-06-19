@@ -118,8 +118,9 @@ void ShowAnalysisWindow(HWND parent, const std::wstring& report) {
         DwmSetWindowAttribute(hwndAnalysis, 19, &useDarkMode, sizeof(useDarkMode));
         DwmSetWindowAttribute(hwndAnalysis, 20, &useDarkMode, sizeof(useDarkMode));
         ShowWindow(hwndAnalysis, SW_SHOW);
-        (void)parent;
+        SetForegroundWindow(hwndAnalysis);
     } else {
         delete reportCopy;
+        MessageBoxW(parent, L"Failed to open the analysis window.", L"PrevueSync Analyze", MB_OK | MB_ICONERROR);
     }
 }
